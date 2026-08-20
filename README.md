@@ -37,9 +37,11 @@ Then, in order:
 2. **Install the native messaging host**, naming every directory it may read:
    ```powershell
    .\native\install-native-host.ps1 -Root E:\my-project
+   .\native\install-native-host.ps1 -Root E:\my-project,D:\other-assets   # several
    ```
    ```bash
    ./native/install-native-host.sh /srv/marketing
+   ./native/install-native-host.sh /srv/marketing /home/me/my-project     # several
    ```
    The add-on has no filesystem of its own; this host is how it reads your PNGs
    and text files. It refuses any path outside the roots you list.

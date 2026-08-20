@@ -2,7 +2,10 @@
 # and declares which directories it is allowed to read.
 #
 #   .\install-native-host.ps1 -Root E:\my-project
-#   .\install-native-host.ps1 -Root E:\my-project -Root D:\other-assets
+#   .\install-native-host.ps1 -Root E:\my-project,D:\other-assets
+#
+# (PowerShell takes several values as one comma-separated array, not as a
+# repeated switch.)
 #
 # Pass every directory the tool must read: the assets root from your config, and
 # — if you use "extends" — the directory holding the project config file.
