@@ -1,0 +1,9 @@
+{
+  "name": "com.storelistingpublisher.filereader",
+  "description": "Reads local marketing assets for the Store Listing Publisher",
+  "path": "__LAUNCHER_PATH__",
+  "type": "stdio",
+  "allowed_extensions": [
+    "publisher@store-listing-publisher"
+  ]
+}

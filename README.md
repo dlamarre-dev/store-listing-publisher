@@ -1,0 +1,266 @@
+# Store Listing Publisher
+
+Operator tooling that fills a browser extension's **store listing** — localized
+descriptions and screenshots — from marketing assets on your own disk.
+
+Two halves, because the two stores could not be more different:
+
+| | Chrome Web Store | addons.mozilla.org |
+|---|---|---|
+| How | a Firefox add-on that drives the dev console page | `amo/amo_publish.py`, the official API |
+| Why | Google has no listing API | AMO has one, so no scraping |
+| Safety | fills a **draft**, never saves | edits go **live immediately**, dry-run by default |
+
+Neither half invents content. You point it at a directory of assets and it types
+them into the right fields, in the right language, in the right order — which is
+the part that is unbearable to do 43 times by hand.
+
+**The CWS side never saves.** A run leaves the listing tab open with the draft
+filled in; reviewing it and clicking **Save draft** stays yours, by design.
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/dlamarre-dev/store-listing-publisher
+cd store-listing-publisher
+npm install                     # jest only, for the tests
+cp config.example.json config.json
+```
+
+Then, in order:
+
+1. **Describe your assets** — see [Configuration](#configuration). Start from
+   `examples/per-language-dirs.config.json` (one directory per language) or
+   `examples/flat-layout.config.json` (language in the filename).
+2. **Install the native messaging host**, naming every directory it may read:
+   ```powershell
+   .\native\install-native-host.ps1 -Root E:\my-project
+   ```
+   ```bash
+   ./native/install-native-host.sh /srv/marketing
+   ```
+   The add-on has no filesystem of its own; this host is how it reads your PNGs
+   and text files. It refuses any path outside the roots you list.
+3. **Load the add-on**: Firefox → `about:debugging` → This Firefox → Load
+   Temporary Add-on → pick `extension/manifest.json`. Reload it after each
+   Firefox restart. Be signed into the Google account with publisher access in
+   this profile — there is no credential handling, the session is the auth.
+4. **Click Dry run first.** It walks every language and locates every field
+   without writing anything. Do this before trusting a run on a console layout
+   you have not seen the tool work on.
+
+For AMO:
+
+```bash
+python amo/amo_publish.py --item my-extension --texts --images          # dry-run
+python amo/amo_publish.py --item my-extension --texts --images --apply  # writes, live
+```
+
+Stdlib only — no pip install.
+
+---
+
+## Configuration
+
+Two layers, and the split is the point.
+
+The **project** whose assets are being published owns the interesting half —
+items, path templates, the locale table — in a file it commits to its own repo,
+where its own tests can check it. This tool's `config.json` then holds only what
+must never be committed, and points at the other with `extends`:
+
+```json
+{
+  "extends": "E:/my-project/store-publisher.config.json",
+  "publisher_id": "your-cws-publisher-uuid",
+  "amo": { "jwt_issuer": "user:...", "jwt_secret": "..." }
+}
+```
+
+Anything declared locally wins. Objects merge a key at a time, so a local
+`amo: { jwt_secret }` does not erase the project's `amo: { previewSet }`; arrays
+replace wholesale, a half-overridden locale table being worse than either
+version. You can also skip `extends` and put everything in one file.
+
+`extends` must be **absolute** when the add-on reads it: an extension knows its
+`moz-extension://` origin and never its own location on disk, so there is
+nothing for a relative path to resolve against. `amo_publish.py`, which does
+know where it is, accepts either.
+
+### Path templates
+
+Nothing about your layout is baked into the code. Placeholders:
+
+| | |
+|---|---|
+| `{slug}` | the item's slug |
+| `{lang}` | the locale's internal code (`pt_BR`, `zh_CN`) |
+| `{LANG}` | uppercase of `fileCode ?? internal` |
+| `{cwsLang}` | the Chrome Web Store code (`pt-BR`, `iw`, `no`) |
+| `{amoLang}` | the AMO code, or empty when the locale is not on AMO |
+| `{n}` | screenshot index, 1-based |
+
+The default — one directory per supported language:
+
+```json
+"assets": {
+  "root": "/srv/marketing",
+  "chrome": {
+    "description": "{slug}/{lang}/description.txt",
+    "screenshot":  "{slug}/{lang}/{n}.png",
+    "screenshotsPerListing": 5
+  },
+  "firefox": { "...": "same shape; omit it if you only publish to one store" }
+}
+```
+
+`{LANG}` exists for the one thing a template cannot express: a project whose
+filenames use a code that is neither the internal one nor a store one. Put
+`"fileCode": "CN"` on that locale's row and `{LANG}` follows it, instead of a
+special case in the code.
+
+An unresolved placeholder is a hard error, not a warning. A template that forgot
+`{lang}` would read one file for every language and publish the same text
+everywhere.
+
+### The locale table
+
+```json
+"locales": [
+  { "internal": "en", "cws": "en", "amo": "en-US", "name": "English",
+    "altNames": ["English (United States)"] },
+  { "internal": "he", "cws": "iw", "amo": "he", "name": "Hebrew" },
+  { "internal": "zh_CN", "cws": "zh-CN", "amo": "zh-CN", "name": "Chinese (China)",
+    "altNames": ["Chinese (Simplified)"], "fileCode": "CN" }
+]
+```
+
+- `internal` — your own code, and the key everything hangs off.
+- `cws` — the Chrome Web Store's code. It diverges: `iw` for Hebrew, `no` for
+  Norwegian, `fil` for Filipino, dashes for regional variants.
+- `amo` — the AMO code, or `null` when AMO cannot store listing translations for
+  that language (its production language list). Those locales are skipped for
+  texts, with a log line.
+- `name` — the label the CWS console shows in its language dropdown, in English
+  (`hl=en`). Matching prefers the trailing code in `"French – fr"`, so a small
+  wording change on Google's side does not break a run.
+- `altNames` — extra labels to try when the console's wording differs.
+
+Duplicate `internal` or `cws` codes are rejected: the run would walk the same
+language twice and the second pass would overwrite the first with another
+locale's text.
+
+### AMO extras
+
+```json
+"amo": {
+  "previewSet": "en-only",
+  "summarySource": { "path": "{slug}/{lang}/messages.json", "key": "extDesc" },
+  "nameSource":    { "path": "{slug}/{lang}/messages.json", "key": "extName" }
+}
+```
+
+AMO previews are **not** localized — one shared gallery per listing — so
+composing it is a policy choice, not a store rule:
+
+- `en-only` (default) — the base locale's screenshots. The honest default.
+- `en-plus-first-per-locale` — those, then the *first* screenshot of every other
+  language, so the gallery shows that the listing is translated. One extra
+  upload per language.
+
+`summarySource` / `nameSource` read one string per locale out of a JSON file, for
+the listing summary and name. Both optional: omit them and those fields are not
+sent, and AMO leaves them alone. A key may be nested one level, matching
+Chrome's `messages.json` shape (`{"extName": {"message": "…"}}`). The name is
+sent only for locales where it actually differs from the live listing — AMO
+throttles writes hard and every edit is immediate.
+
+---
+
+## Using the CWS add-on
+
+- **Extension** — from the `items` in your config.
+- **Update detailed descriptions** — replaces the description for every locale.
+- **Replace the localized screenshots per locale** — deletes the existing ones,
+  then uploads `1..N` in order.
+- **Replace international screenshots** — the global, non-localized slots. On its
+  own this **skips the language walk entirely**: that card is language-
+  independent, so there is nothing to select.
+- **Dry run** — navigates and locates every field, writes nothing.
+- **Locale filter** — empty = all; `fr,de` = just those; `from:pl` = resume an
+  aborted run at `pl`. Ignored, with a log line, when no per-language step is
+  ticked.
+- **Probe page** — dumps the page's structure (dropdowns, textareas, file
+  inputs, headings, buttons) to the log. This is the debugging entry point when
+  Google changes the console.
+
+A run aborts at the first failed step, with diagnostics, rather than risk
+writing into the wrong locale. Fix, then resume with `from:<locale>`.
+
+The log lives in `storage.local`, not in the popup: Firefox destroys a popup the
+moment it loses focus, and a 43-locale run outlives that many times over. Close
+it and reopen — the output is still there, still updating.
+
+---
+
+## When the console changes
+
+Every DOM heuristic lives in `extension/stores/cws.js`, and selectors are
+deliberately text- and role-based rather than class-based, so cosmetic
+redesigns pass through. When a step fails: click **Probe page**, read the dump,
+adjust the matching `page*` function, reload the temporary add-on, resume with
+`from:<locale>`.
+
+Two things to know before editing that file:
+
+- The `page*` functions are **serialised** into the page by
+  `chrome.scripting.executeScript({ world: 'MAIN' })`, so each one must be
+  entirely self-contained. That is why the small helpers (`visible`, `txt`,
+  `trail`) are repeated in every one of them. There is no bundler; factoring
+  them out would break the injection.
+- `listingUrl` pins `hl=en`. Every heading and `aria-label` regex assumes the
+  English console.
+
+Supporting another store means a new `extension/stores/<id>.js` exposing the same
+surface, documented at the bottom of `cws.js`.
+
+---
+
+## Security notes
+
+- **The native host is confined.** A native messaging host is addressed by name,
+  and any add-on the host manifest allows can ask it for a file. Every requested
+  path is resolved — collapsing `..` and following symlinks — and must land
+  inside one of the roots in `native/allowed-roots.json`, which the installer
+  writes from the directories you name. A missing file means no roots, which
+  means every read is refused: a botched install cannot quietly grant
+  everything.
+- **`config.json` and `.amo-previews-state.json` are gitignored.** The first
+  holds your AMO API secret and CWS publisher id. If you fork this and commit
+  one by accident, rotate the key at
+  <https://addons.mozilla.org/developers/addon/api/key/>.
+- **No CWS credentials anywhere.** That side authenticates as whoever the
+  Firefox profile is signed in as. The add-on only checks whether it got
+  redirected to a login page.
+- **The add-on is dev-only.** Load it temporarily via `about:debugging`; it is
+  not meant to be signed or installed permanently.
+
+---
+
+## Tests
+
+```bash
+npm test
+```
+
+Covers the pure logic: locale-table validation and filtering, the language-walk
+decision, path-template resolution against both shipped layouts, and config
+merging and validation. The DOM heuristics in `cws.js` are not unit-testable —
+they exist to match a page nobody controls, which is what **Dry run** and
+**Probe page** are for.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

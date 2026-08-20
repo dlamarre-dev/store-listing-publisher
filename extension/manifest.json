@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Store Listing Publisher",
+  "version": "1.0",
+  "description": "Operator tool: fills the Chrome Web Store listing draft (localized descriptions + screenshots) from local marketing assets. Load via about:debugging in Firefox.",
+  "permissions": ["tabs", "scripting", "storage", "nativeMessaging"],
+  "host_permissions": [
+    "*://chrome.google.com/webstore/devconsole/*"
+  ],
+  "background": {
+    "scripts": [
+      "lib/config.js",
+      "lib/locales.js",
+      "lib/paths.js",
+      "stores/cws.js",
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "Store Listing Publisher",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "publisher@store-listing-publisher",
+      "strict_min_version": "128.0"
+    }
+  }
+}

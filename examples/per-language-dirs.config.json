@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "The default layout: one directory per supported language, files named by",
+    "index. Nothing about a locale leaks into a filename, so no fileCode is",
+    "needed. Point assets.root at the directory holding the <slug>/ folders."
+  ],
+  "assets": {
+    "root": "/srv/marketing",
+    "chrome": {
+      "description": "{slug}/{lang}/description.txt",
+      "screenshot": "{slug}/{lang}/{n}.png",
+      "screenshotsPerListing": 5
+    },
+    "firefox": {
+      "description": "{slug}/{lang}/description-firefox.txt",
+      "screenshot": "{slug}/{lang}/{n}.png",
+      "screenshotsPerListing": 5
+    }
+  },
+  "amo": {
+    "previewSet": "en-only"
+  },
+  "items": [
+    {
+      "id": "abcdefghijklmnopabcdefghijklmnop",
+      "name": "My Extension",
+      "slug": "my-extension",
+      "amo_guid": "my-extension@example.com"
+    }
+  ],
+  "locales": [
+    {
+      "internal": "de",
+      "cws": "de",
+      "amo": "de",
+      "name": "German"
+    },
+    {
+      "internal": "en",
+      "cws": "en",
+      "amo": "en-US",
+      "name": "English",
+      "altNames": [
+        "English (United States)"
+      ]
+    },
+    {
+      "internal": "fr",
+      "cws": "fr",
+      "amo": "fr",
+      "name": "French"
+    },
+    {
+      "internal": "ja",
+      "cws": "ja",
+      "amo": "ja",
+      "name": "Japanese"
+    },
+    {
+      "internal": "pt_BR",
+      "cws": "pt-BR",
+      "amo": "pt-BR",
+      "name": "Portuguese (Brazil)"
+    },
+    {
+      "internal": "zh_CN",
+      "cws": "zh-CN",
+      "amo": "zh-CN",
+      "name": "Chinese (China)",
+      "altNames": [
+        "Chinese (Simplified)"
+      ]
+    }
+  ]
+}

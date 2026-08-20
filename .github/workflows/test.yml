@@ -1,0 +1,65 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Both scripts are stdlib-only on purpose, so there is nothing to install
+      # and a syntax check is the whole gate.
+      - run: python -m compileall -q amo native tests
+      - run: pip install --quiet ruff && ruff check amo native tests
+      # The native host's confinement is the one thing here that must not
+      # regress silently — a weakened check still reads every file it used to.
+      - run: python tests/test_native_host.py
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Every background script the manifest lists must exist, and the host
+      # manifest must allow exactly the add-on's own id — a mismatch fails at
+      # connect time with a message that points nowhere useful.
+      - name: manifest and native host agree
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          manifest = json.loads(Path('extension/manifest.json').read_text())
+          problems = []
+          for script in manifest['background']['scripts']:
+              if not (Path('extension') / script).is_file():
+                  problems.append(f'manifest lists a missing script: {script}')
+          if not (Path('extension') / manifest['action']['default_popup']).is_file():
+              problems.append('manifest lists a missing popup')
+
+          ext_id = manifest['browser_specific_settings']['gecko']['id']
+          host = json.loads(Path('native/host-manifest.example.json').read_text())
+          if host['allowed_extensions'] != [ext_id]:
+              problems.append(f"host allows {host['allowed_extensions']}, add-on id is {ext_id}")
+
+          if problems:
+              sys.exit('\n'.join(problems))
+          print('manifest OK')
+          PY

@@ -1,0 +1,14 @@
+{
+  "name": "store-listing-publisher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Operator tooling that fills browser-extension store listings from local marketing assets.",
+  "license": "MIT",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

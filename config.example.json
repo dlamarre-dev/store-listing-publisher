@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Copy to config.json (gitignored) and fill in your values.",
+    "",
+    "Two layers on purpose: keep the interesting half — items, path templates,",
+    "the locale table — in a file your PROJECT commits, and point at it with",
+    "\"extends\" (absolute path; the add-on has no path of its own to resolve a",
+    "relative one against). This file then holds only what must never be",
+    "committed: the CWS publisher UUID and the AMO API secret. Anything you",
+    "declare here wins over the extended file.",
+    "",
+    "You can also drop \"extends\" and put everything here — see examples/ for",
+    "two complete configurations.",
+    "",
+    "AMO credentials: https://addons.mozilla.org/developers/addon/api/key/"
+  ],
+  "extends": "E:/my-project/store-publisher.config.json",
+  "publisher_id": "YOUR_CWS_PUBLISHER_UUID",
+  "amo": {
+    "jwt_issuer": "YOUR_AMO_JWT_ISSUER (user:...)",
+    "jwt_secret": "YOUR_AMO_JWT_SECRET"
+  }
+}
