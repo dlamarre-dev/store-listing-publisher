@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 AMO (addons.mozilla.org) listing publisher — the API-based half of the Store
 Listing Publisher. AMO has an official add-ons API, so unlike the Chrome Web
