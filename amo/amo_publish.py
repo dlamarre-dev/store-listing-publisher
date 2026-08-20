@@ -44,7 +44,10 @@ from pathlib import Path
 API_BASE = "https://addons.mozilla.org/api/v5"
 TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parent
-DEFAULT_CONFIG = REPO_ROOT / "config.json"
+# Beside the add-on's manifest, not at the repo root: an extension can only
+# fetch resources from its own directory, so that is the one place BOTH halves
+# of this tool can read the same file. --config overrides it.
+DEFAULT_CONFIG = REPO_ROOT / "extension" / "config.json"
 # Records the screenshot set last uploaded per add-on, so an unchanged gallery
 # is skipped instead of torn down and re-uploaded (AMO throttles writes hard).
 STATE_FILE = REPO_ROOT / ".amo-previews-state.json"  # gitignored

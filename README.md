@@ -26,7 +26,7 @@ filled in; reviewing it and clicking **Save draft** stays yours, by design.
 git clone https://github.com/dlamarre-dev/store-listing-publisher
 cd store-listing-publisher
 npm install                     # jest only, for the tests
-cp config.example.json config.json
+cp extension/config.example.json extension/config.json
 ```
 
 Then, in order:
@@ -85,6 +85,12 @@ Anything declared locally wins. Objects merge a key at a time, so a local
 `amo: { jwt_secret }` does not erase the project's `amo: { previewSet }`; arrays
 replace wholesale, a half-overridden locale table being worse than either
 version. You can also skip `extends` and put everything in one file.
+
+**`config.json` goes in `extension/`, beside `manifest.json`** — that is the only
+directory the add-on can read with `chrome.runtime.getURL`, and `amo_publish.py`
+defaults to the same file so both halves stay in step. Put it anywhere else and
+Firefox fails the fetch with a bare *"The operation was aborted."*, which tells
+you nothing. Pass `--config` to point the Python half elsewhere.
 
 `extends` must be **absolute** when the add-on reads it: an extension knows its
 `moz-extension://` origin and never its own location on disk, so there is
@@ -239,7 +245,7 @@ surface, documented at the bottom of `cws.js`.
   writes from the directories you name. A missing file means no roots, which
   means every read is refused: a botched install cannot quietly grant
   everything.
-- **`config.json` and `.amo-previews-state.json` are gitignored.** The first
+- **`extension/config.json` and `.amo-previews-state.json` are gitignored.** The first
   holds your AMO API secret and CWS publisher id. If you fork this and commit
   one by accident, rotate the key at
   <https://addons.mozilla.org/developers/addon/api/key/>.

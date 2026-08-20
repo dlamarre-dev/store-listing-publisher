@@ -35,10 +35,28 @@ function appendLocal(text, cls) {
 }
 
 // The bundled half. It may be almost nothing — just "extends" plus the secrets.
+// It has to sit beside manifest.json: an extension can only fetch resources from
+// its own directory, and Firefox reports a missing one as a bare network failure
+// ("The operation was aborted."), which says nothing about what to do.
 async function loadBundledConfig() {
-  const resp = await fetch(chrome.runtime.getURL('config.json'));
-  if (!resp.ok) throw new Error(`config.json not found (${resp.status}) — copy config.example.json → config.json`);
-  return resp.json();
+  const url = chrome.runtime.getURL('config.json');
+  let resp;
+  try {
+    resp = await fetch(url);
+  } catch (e) {
+    throw new Error('config.json is missing from the add-on directory. '
+      + 'Copy extension/config.example.json to extension/config.json and fill it in. '
+      + `(${e.message})`);
+  }
+  if (!resp.ok) {
+    throw new Error(`config.json could not be read (HTTP ${resp.status}) — `
+      + 'copy extension/config.example.json to extension/config.json.');
+  }
+  try {
+    return await resp.json();
+  } catch (e) {
+    throw new Error(`config.json is not valid JSON: ${e.message}`);
+  }
 }
 
 // "extends" points at a file on disk, which only the native host can read, so

@@ -59,6 +59,15 @@ jobs:
           if host['allowed_extensions'] != [ext_id]:
               problems.append(f"host allows {host['allowed_extensions']}, add-on id is {ext_id}")
 
+          # config.json must sit beside the manifest: the popup reads it with
+          # chrome.runtime.getURL, which can only see the add-on's own directory.
+          # Anywhere else and Firefox fails the fetch with a bare network error.
+          if not Path('extension/config.example.json').is_file():
+              problems.append('config.example.json must live in extension/, beside the manifest')
+          amo = Path('amo/amo_publish.py').read_text()
+          if 'REPO_ROOT / "extension" / "config.json"' not in amo:
+              problems.append('amo_publish.py must default to the same extension/config.json')
+
           if problems:
               sys.exit('\n'.join(problems))
           print('manifest OK')

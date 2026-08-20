@@ -1,4 +1,6 @@
 # Operator secrets and machine-specific state — never committed.
+# Bare pattern on purpose: config.json lives in extension/ (beside the manifest,
+# the only place the add-on can fetch it from) and must stay ignored there.
 config.json
 .amo-previews-state.json
 
@@ -7,6 +9,8 @@ native/allowed-roots.json
 native/com.storelistingpublisher.filereader.json
 
 node_modules/
+.idea/
+.vscode/
 __pycache__/
 *.pyc
 *.pyo
