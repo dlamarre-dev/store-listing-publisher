@@ -1,23 +1,43 @@
 {
   "_comment": [
-    "Copy to config.json (gitignored) and fill in your values.",
+    "Copy to config.json (gitignored, in this same directory) and fill it in.",
+    "",
+    "It must live BESIDE manifest.json: that is the only directory the add-on can",
+    "read with chrome.runtime.getURL, and amo_publish.py / cws_publish.py default",
+    "to the same file so every half stays in step.",
     "",
     "Two layers on purpose: keep the interesting half — items, path templates,",
     "the locale table — in a file your PROJECT commits, and point at it with",
     "\"extends\" (absolute path; the add-on has no path of its own to resolve a",
     "relative one against). This file then holds only what must never be",
-    "committed: the CWS publisher UUID and the AMO API secret. Anything you",
-    "declare here wins over the extended file.",
+    "committed: credentials, and assets.root. Anything declared here wins.",
     "",
     "You can also drop \"extends\" and put everything here — see examples/ for",
     "two complete configurations.",
     "",
-    "AMO credentials: https://addons.mozilla.org/developers/addon/api/key/"
+    "Credentials:",
+    "  cws  — https://developer.chrome.com/docs/webstore/using-api",
+    "         Pick ONE mode. serviceAccountKey is preferred: a refresh token",
+    "         expires every 7 days while the OAuth consent screen is in",
+    "         \"Testing\". The service-account mode needs `pip install",
+    "         cryptography` (RS256 is not in the standard library).",
+    "  amo  — https://addons.mozilla.org/developers/addon/api/key/"
   ],
   "extends": "E:/my-project/store-publisher.config.json",
   "publisher_id": "YOUR_CWS_PUBLISHER_UUID",
   "amo": {
     "jwt_issuer": "YOUR_AMO_JWT_ISSUER (user:...)",
     "jwt_secret": "YOUR_AMO_JWT_SECRET"
+  },
+  "assets": {
+    "root": "/absolute/path/to/your/project"
+  },
+  "cws": {
+    "serviceAccountKey": "/absolute/path/to/service-account-key.json",
+    "_or_use_a_refresh_token_instead": {
+      "client_id": "YOUR_OAUTH_CLIENT_ID",
+      "client_secret": "YOUR_OAUTH_CLIENT_SECRET",
+      "refresh_token": "YOUR_OAUTH_REFRESH_TOKEN"
+    }
   }
 }

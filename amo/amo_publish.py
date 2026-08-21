@@ -29,6 +29,7 @@ Stdlib only — no pip dependencies.
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -57,6 +58,8 @@ REQUEST_GAP_S = 1.0     # initial delay before each write request (grows on thro
 MAX_PACE_S = 30.0       # cap for the adaptive pacing delay
 AUTO_RETRY_CAP_S = 180  # longest we'll auto-sleep on a single throttle before retrying
 LONG_THROTTLE_S = 300   # above this hinted wait, bail with an ETA instead of sleeping
+UPLOAD_POLL_S = 5       # between validation polls after a version upload
+UPLOAD_TIMEOUT_S = 600  # AMO's validator can take minutes on a large package
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _pace_gap = REQUEST_GAP_S  # adaptive: bumped to the server's hinted rate on 429/503
 
@@ -472,15 +475,136 @@ def update_images(creds, guid, addon, root, files, apply, force):
     print(f"  recorded gallery state ({len(files)} images) - future runs will skip if unchanged")
 
 
+# ── version upload (the package, not the listing) ─────────────────────────────
+#
+# Three steps, per AMO's v5 API: create an upload, poll it until the validator
+# has processed it, then attach the processed upload as a new version. Only the
+# third one writes anything to the listing.
+
+
+def package_version(root, profile, item):
+    """The version of the built package, read from the build's own manifest, so
+    the number cannot disagree with the bytes being uploaded."""
+    source = profile.get("versionSource")
+    if not source:
+        sys.exit('config "assets.firefox.versionSource" is required to resolve '
+                 "{version} in the package template — or pass --package.")
+    template, key = source.get("path"), source.get("key")
+    if not template or not key:
+        sys.exit('versionSource needs both "path" and "key".')
+    path = root / resolve_template(template, {"slug": item["slug"]})
+    if not path.is_file():
+        sys.exit(f"Not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except ValueError as exc:
+        sys.exit(f"{path} is not valid JSON: {exc}")
+    value = data.get(key)
+    if isinstance(value, dict):
+        value = value.get("message")
+    value = (value or "").strip()
+    if not value:
+        sys.exit(f'"{key}" missing or empty in {path}')
+    return value
+
+
+def package_path(root, profile, item):
+    template = profile.get("package")
+    if not template:
+        sys.exit('config "assets.firefox.package" is required (or pass --package).')
+    version = package_version(root, profile, item)
+    return root / resolve_template(template, {"slug": item["slug"], "version": version})
+
+
+def wait_for_validation(creds, uuid_str):
+    """Polls the upload until AMO has processed it. `processed` and `valid` are
+    separate: a processed upload can still be invalid, and the validation blob is
+    the only thing that says why."""
+    deadline = time.time() + UPLOAD_TIMEOUT_S
+    while time.time() < deadline:
+        time.sleep(UPLOAD_POLL_S)
+        upload = api_request(creds, "GET", f"/addons/upload/{uuid_str}/")
+        if not upload.get("processed"):
+            print("  validating…")
+            continue
+        if upload.get("valid"):
+            print("  validation passed ✓")
+            return upload
+        # Print the messages, not the whole blob: the blob is enormous.
+        validation = upload.get("validation") or {}
+        print(f"  validation FAILED: {validation.get('errors', '?')} error(s), "
+              f"{validation.get('warnings', '?')} warning(s)")
+        for message in (validation.get("messages") or [])[:10]:
+            if message.get("type") == "error":
+                print(f"    - {message.get('message')} ({message.get('description')})")
+        sys.exit("Upload rejected by the validator; nothing was attached to the listing.")
+    sys.exit(f"Validation did not finish within {UPLOAD_TIMEOUT_S}s. The upload may "
+             "still complete — check the developer hub.")
+
+
+def current_license(addon):
+    """The add-on's existing license slug, so a new version keeps it.
+
+    A listed version needs a license, but making the operator paste a slug is a
+    good way to change one by accident. The GET main() already does carries it —
+    on the VERSION, not the add-on: addon.license does not exist, the slug lives
+    at current_version.license.slug ("MIT", "MPL-2.0", …).
+    """
+    version = addon.get("current_version") or {}
+    lic = version.get("license") or {}
+    if lic.get("is_custom"):
+        # A custom license is text, not a slug, and re-sending it as one would
+        # fail. Carrying custom text forward is a job for explicit config.
+        return None
+    return lic.get("slug")
+
+
+def upload_version(creds, guid, addon, zip_path, channel, license_slug, release_notes, apply):
+    if not zip_path.is_file():
+        sys.exit(f"Package not found: {zip_path}\nRun the build first, or pass --package.")
+    size = zip_path.stat().st_size
+    print(f"  package: {zip_path} ({size / 1024 / 1024:.1f} MB), channel {channel}")
+
+    if channel == "listed" and not license_slug:
+        sys.exit("A listed version needs a license, and the live listing did not "
+                 'report one. Set "amo": {"license": "<slug>"} in the config.')
+
+    body = {"upload": "<uuid from step 1>"}
+    if license_slug:
+        body["license"] = license_slug
+    if release_notes:
+        body["release_notes"] = release_notes
+
+    if not apply:
+        print(f"  would POST /addons/upload/ (multipart: upload, channel={channel})")
+        print("  then poll /addons/upload/<uuid>/ until processed and valid")
+        print(f"  then POST /addons/addon/{guid}/versions/ {json.dumps(body)}")
+        return
+
+    created = api_request(creds, "POST", "/addons/upload/", multipart={
+        "upload": (zip_path.name, zip_path.read_bytes()),
+        "channel": channel,
+    })
+    uuid_str = created.get("uuid")
+    if not uuid_str:
+        sys.exit(f"Upload create returned no uuid: {created}")
+    print(f"  upload {uuid_str} created")
+
+    wait_for_validation(creds, uuid_str)
+
+    body["upload"] = uuid_str
+    version = api_request(creds, "POST", f"/addons/addon/{guid}/versions/", json_body=body)
+    print(f"  version {version.get('version', '?')} created "
+          f"(id {version.get('id', '?')}) ✓")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     # Never let a non-ASCII status char (✓, …) crash on a legacy code-page console.
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--item", required=True, help="item slug from the config (e.g. my-extension)")
@@ -490,11 +614,16 @@ def main():
     ap.add_argument("--images", action="store_true", help="replace the listing previews")
     ap.add_argument("--force-images", action="store_true",
                     help="re-upload previews even if the recorded gallery is unchanged")
+    ap.add_argument("--upload-version", action="store_true",
+                    help="upload the built package as a new version of the add-on")
+    ap.add_argument("--package", help="package file to upload (overrides the template)")
+    ap.add_argument("--channel", default="listed", choices=("listed", "unlisted"),
+                    help="distribution channel for --upload-version (default: listed)")
     ap.add_argument("--apply", action="store_true",
                     help="actually write (default is dry-run). AMO changes go live immediately!")
     args = ap.parse_args()
-    if not args.texts and not args.images:
-        ap.error("nothing to do — pass --texts and/or --images")
+    if not args.texts and not args.images and not args.upload_version:
+        ap.error("nothing to do — pass --texts, --images and/or --upload-version")
 
     config = load_config(args.config)
     amo_cfg = config.get("amo") or {}
@@ -512,7 +641,7 @@ def main():
     root, profile = assets_profile(config, "firefox")
     locales = supported_locales(config)
     base_code = config.get("globalLocale", "en")
-    base_locale = next((l for l in locales if l["internal"] == base_code), locales[0])
+    base_locale = next((loc for loc in locales if loc["internal"] == base_code), locales[0])
 
     print(f'{"APPLY" if args.apply else "DRY-RUN"} — {item["name"]} ({guid})')
     print(f"Assets root: {root}")
@@ -536,6 +665,13 @@ def main():
         files = preview_files(root, profile, item, locales,
                               amo_cfg.get("previewSet", "en-only"), base_locale)
         update_images(amo_cfg, guid, addon, root, files, args.apply, args.force_images)
+    if args.upload_version:
+        print("Upload version…")
+        zip_path = (Path(args.package).expanduser() if args.package
+                    else package_path(root, profile, item))
+        upload_version(amo_cfg, guid, addon, zip_path, args.channel,
+                       amo_cfg.get("license") or current_license(addon),
+                       amo_cfg.get("releaseNotes"), args.apply)
 
     print("Done." if args.apply else "Dry-run done — re-run with --apply to write (changes go live immediately).")
 

@@ -25,13 +25,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # Both scripts are stdlib-only on purpose, so there is nothing to install
-      # and a syntax check is the whole gate.
-      - run: python -m compileall -q amo native tests
-      - run: pip install --quiet ruff && ruff check amo native tests
+      # Stdlib-only on purpose — cryptography is needed for one auth mode and is
+      # imported inside that branch, so the suites must pass without it installed.
+      # That is what this job proves by never installing it.
+      - run: python -m compileall -q amo cws native tests
+      # Ruff is pinned: without a version, a new release's default rules can fail
+      # a build nobody changed. The rule set itself lives in ruff.toml.
+      - run: pip install --quiet ruff==0.16.3 && ruff check .
       # The native host's confinement is the one thing here that must not
       # regress silently — a weakened check still reads every file it used to.
       - run: python tests/test_native_host.py
+      # Request bodies, URLs and the auth-mode choice: the failures that would be
+      # accepted by the store and do the wrong thing.
+      - run: python tests/test_cws_publish.py
+      # The two config loaders are duplicated on purpose; this is what stops them
+      # from drifting into meaning different things for the same file.
+      - run: python tests/test_config_parity.py
 
   manifest:
     runs-on: ubuntu-latest
@@ -64,9 +73,9 @@ jobs:
           # Anywhere else and Firefox fails the fetch with a bare network error.
           if not Path('extension/config.example.json').is_file():
               problems.append('config.example.json must live in extension/, beside the manifest')
-          amo = Path('amo/amo_publish.py').read_text()
-          if 'REPO_ROOT / "extension" / "config.json"' not in amo:
-              problems.append('amo_publish.py must default to the same extension/config.json')
+          for script in ('amo/amo_publish.py', 'cws/cws_publish.py'):
+              if 'REPO_ROOT / "extension" / "config.json"' not in Path(script).read_text():
+                  problems.append(f'{script} must default to the same extension/config.json')
 
           if problems:
               sys.exit('\n'.join(problems))
