@@ -1,22 +1,26 @@
 # Store Listing Publisher
 
-Operator tooling that fills a browser extension's **store listing** — localized
-descriptions and screenshots — from marketing assets on your own disk.
+Operator tooling that publishes a browser extension: the package, the release
+lifecycle, and the localized listing — descriptions and screenshots — from
+marketing assets on your own disk.
 
-Two halves, because the two stores could not be more different:
+It is split by **what each mechanism can actually do**, not by store:
 
-| | Chrome Web Store | addons.mozilla.org |
+| | Package + release lifecycle | Listing metadata |
 |---|---|---|
-| How | a Firefox add-on that drives the dev console page | `amo/amo_publish.py`, the official API |
-| Why | Google has no listing API | AMO has one, so no scraping |
-| Safety | fills a **draft**, never saves | edits go **live immediately**, dry-run by default |
+| **Chrome Web Store** | `cws/cws_publish.py` — API v2 | **`extension/`**, a Firefox add-on driving the dev console — [no API exists](#why-the-add-on-exists) |
+| **addons.mozilla.org** | `amo/amo_publish.py` — API v5 | `amo/amo_publish.py` — API v5 |
 
-Neither half invents content. You point it at a directory of assets and it types
-them into the right fields, in the right language, in the right order — which is
-the part that is unbearable to do 43 times by hand.
+Three of those four boxes are real APIs. The fourth is the add-on, and it is not
+a fallback or a legacy path — it is the only way there is.
 
-**The CWS side never saves.** A run leaves the listing tab open with the draft
-filled in; reviewing it and clicking **Save draft** stays yours, by design.
+Nothing here invents content. You point it at a directory of assets and it puts
+them in the right fields, in the right language, in the right order, which is the
+part that is unbearable to do 43 times by hand.
+
+**Nothing publishes by surprise.** Every write is dry-run by default and needs
+`--apply`. The add-on never saves at all: a run leaves the listing tab open with
+the draft filled in, and clicking **Save draft** stays yours.
 
 ---
 
@@ -53,14 +57,27 @@ Then, in order:
    without writing anything. Do this before trusting a run on a console layout
    you have not seen the tool work on.
 
-For AMO:
+### Releasing
 
 ```bash
-python amo/amo_publish.py --item my-extension --texts --images          # dry-run
-python amo/amo_publish.py --item my-extension --texts --images --apply  # writes, live
+# Chrome Web Store — package and lifecycle
+python cws/cws_publish.py --item my-extension --status                    # read-only
+python cws/cws_publish.py --item my-extension --upload --apply            # new draft
+#   ... then the add-on fills the localized listing draft, and you Save draft ...
+python cws/cws_publish.py --item my-extension --publish --staged --apply
+python cws/cws_publish.py --item my-extension --rollout 50 --apply
+
+# addons.mozilla.org — package and listing, both by API
+python amo/amo_publish.py --item my-extension --upload-version           # dry-run
+python amo/amo_publish.py --item my-extension --texts --images --apply   # writes, live
 ```
 
-Stdlib only — no pip install.
+A dry-run of a write makes no API call and needs **no credentials at all**, so
+you can check the resolved package path and the exact body that would be sent
+before doing any OAuth setup.
+
+Stdlib only, with one exception: service-account auth signs its JWT with RS256,
+which the standard library cannot do. See [Authentication](#authentication).
 
 ---
 
@@ -77,6 +94,8 @@ must never be committed, and points at the other with `extends`:
 {
   "extends": "E:/my-project/store-publisher.config.json",
   "publisher_id": "your-cws-publisher-uuid",
+  "assets": { "root": "/absolute/path/to/your/project" },
+  "cws": { "serviceAccountKey": "/path/to/service-account-key.json" },
   "amo": { "jwt_issuer": "user:...", "jwt_secret": "..." }
 }
 ```
@@ -87,8 +106,8 @@ replace wholesale, a half-overridden locale table being worse than either
 version. You can also skip `extends` and put everything in one file.
 
 **`config.json` goes in `extension/`, beside `manifest.json`** — that is the only
-directory the add-on can read with `chrome.runtime.getURL`, and `amo_publish.py`
-defaults to the same file so both halves stay in step. Put it anywhere else and
+directory the add-on can read with `chrome.runtime.getURL`, and both Python
+scripts default to the same file so every half stays in step. Put it anywhere else and
 Firefox fails the fetch with a bare *"The operation was aborted."*, which tells
 you nothing. Pass `--config` to point the Python half elsewhere.
 
@@ -109,6 +128,7 @@ Nothing about your layout is baked into the code. Placeholders:
 | `{cwsLang}` | the Chrome Web Store code (`pt-BR`, `iw`, `no`) |
 | `{amoLang}` | the AMO code, or empty when the locale is not on AMO |
 | `{n}` | screenshot index, 1-based |
+| `{version}` | the built package's version, read from `versionSource` |
 
 The default — one directory per supported language:
 
@@ -123,6 +143,27 @@ The default — one directory per supported language:
   "firefox": { "...": "same shape; omit it if you only publish to one store" }
 }
 ```
+
+### The package
+
+`cws/cws_publish.py --upload` and `amo/amo_publish.py --upload-version` need to
+find the built ZIP, and the version is part of its name, so it gets a template
+too — plus a source to read the version from:
+
+```json
+"chrome": {
+  "package": "dist/{slug}-chrome-v{version}.zip",
+  "versionSource": { "path": "dist/{slug}/chrome/manifest.json", "key": "version" }
+}
+```
+
+Reading the version out of the **built** manifest rather than taking it as an
+argument is the point: the number then cannot disagree with the bytes being
+uploaded. `versionSource` reuses the same `{path, key}` shape as AMO's
+`summarySource`, and tolerates Chrome's `{"key": {"message": …}}` wrapper.
+`--package <path>` bypasses both for a one-off.
+
+### More on templates
 
 `{LANG}` exists for the one thing a template cannot express: a project whose
 filenames use a code that is neither the internal one nor a store one. Put
@@ -187,6 +228,65 @@ throttles writes hard and every edit is immediate.
 
 ---
 
+## Why the add-on exists
+
+Because the Chrome Web Store API has no listing metadata. Not "not yet", not
+"undocumented" — none. Its
+[discovery document](https://chromewebstore.googleapis.com/$discovery/rest?version=v2)
+is exhaustive and defines five methods over two resources:
+
+| `media` | `upload` (the package ZIP) |
+|---|---|
+| `publishers.items` | `publish`, `fetchStatus`, `cancelSubmission`, `setPublishedDeployPercentage` |
+
+No schema, no field, no method for a description, a localized description, a
+screenshot, a promo tile or a category. The
+[`publishers.items` resource](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items)
+says outright that it has "no persistent data", and the
+[usage guide](https://developer.chrome.com/docs/webstore/using-api) states the
+prerequisite: *"Before you can publish a new item, you have to fill out the Store
+listing and Privacy tabs in the Developer Dashboard."*
+
+So driving the dashboard is not a shortcut taken instead of reading the docs. It
+is the only mechanism that exists for that half of the job, which is why
+`extension/` is a peer of `cws/` here rather than something to be replaced by it.
+
+If you are about to go looking for that API: it is not in v1 either, and v1
+sunsets 15 October 2026. What changed in v2 is service-account auth, staged
+publishing and rollout control — all of which `cws/cws_publish.py` uses, and none
+of which touch the listing.
+
+---
+
+## Authentication
+
+**Chrome Web Store** — pick one mode under `cws` in your config:
+
+- **Service account** (preferred). Create one in Google Cloud, then grant it API
+  access from the Developer Dashboard, and point `cws.serviceAccountKey` at its
+  JSON key file. No expiry, nothing to refresh.
+  Needs `pip install cryptography`: the assertion is a **RS256**-signed JWT, and
+  RSA is not in the standard library. The import happens only on this path, so
+  the refresh-token mode still works on a machine with no packages installed.
+- **OAuth refresh token** — `cws.client_id` + `cws.client_secret` +
+  `cws.refresh_token`, from the
+  [OAuth Playground flow](https://developer.chrome.com/docs/webstore/using-api).
+  Zero dependencies, but **the refresh token expires every 7 days** while the
+  OAuth consent screen is in "Testing", which means redoing the dance at every
+  release. That is why the service account is the default recommendation.
+
+Both converge on a bearer token for the scope
+`https://www.googleapis.com/auth/chromewebstore`.
+
+**addons.mozilla.org** — `amo.jwt_issuer` + `amo.jwt_secret` from
+<https://addons.mozilla.org/developers/addon/api/key/>. HS256, so stdlib only.
+
+**The add-on has no credentials at all.** It authenticates as whoever the Firefox
+profile is signed in as, and only checks whether it got redirected to a login
+page.
+
+---
+
 ## Using the CWS add-on
 
 - **Extension** — from the `items` in your config.
@@ -206,6 +306,10 @@ throttles writes hard and every edit is immediate.
 
 A run aborts at the first failed step, with diagnostics, rather than risk
 writing into the wrong locale. Fix, then resume with `from:<locale>`.
+
+The add-on fills the draft; it does not upload packages and does not publish.
+Those are `cws/cws_publish.py`'s job, and `--status` there is the way to see
+whether a draft is already in review before you start writing into it.
 
 The log lives in `storage.local`, not in the popup: Firefox destroys a popup the
 moment it loses focus, and a 43-locale run outlives that many times over. Close
@@ -263,11 +367,22 @@ surface, documented at the bottom of `cws.js`.
 npm test
 ```
 
-Covers the pure logic: locale-table validation and filtering, the language-walk
-decision, path-template resolution against both shipped layouts, and config
-merging and validation. The DOM heuristics in `cws.js` are not unit-testable —
-they exist to match a page nobody controls, which is what **Dry run** and
-**Probe page** are for.
+```bash
+npm test                             # the add-on's pure logic (jest)
+python tests/test_cws_publish.py     # request bodies, URLs, auth-mode choice
+python tests/test_config_parity.py   # the two config loaders cannot drift apart
+python tests/test_native_host.py     # the native host's confinement
+```
+
+What they pin is the quiet failures: a publish body Google would accept but that
+does the wrong thing, an upload sent to the plain `/v2` path instead of
+`/upload/v2`, `skipReview` sneaking into a body, a template that dropped
+`{version}` and would upload whichever build was lying around, or one config
+loader learning a rule the other did not.
+
+The DOM heuristics in `extension/stores/cws.js` are not unit-testable — they
+exist to match a page nobody controls, which is what **Dry run** and **Probe
+page** are for.
 
 ## License
 

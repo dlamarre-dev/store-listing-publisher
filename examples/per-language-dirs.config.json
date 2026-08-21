@@ -9,12 +9,22 @@
     "chrome": {
       "description": "{slug}/{lang}/description.txt",
       "screenshot": "{slug}/{lang}/{n}.png",
-      "screenshotsPerListing": 5
+      "screenshotsPerListing": 5,
+      "package": "{slug}/build/{slug}-{version}-chrome.zip",
+      "versionSource": {
+        "path": "{slug}/build/chrome/manifest.json",
+        "key": "version"
+      }
     },
     "firefox": {
       "description": "{slug}/{lang}/description-firefox.txt",
       "screenshot": "{slug}/{lang}/{n}.png",
-      "screenshotsPerListing": 5
+      "screenshotsPerListing": 5,
+      "package": "{slug}/build/{slug}-{version}-firefox.zip",
+      "versionSource": {
+        "path": "{slug}/build/firefox/manifest.json",
+        "key": "version"
+      }
     }
   },
   "amo": {

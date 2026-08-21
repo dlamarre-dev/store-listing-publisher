@@ -1,0 +1,28 @@
+# Pinned on purpose. Without a config, ruff applies whatever its current release
+# considers the default set, so a CI that was green yesterday can fail today on a
+# rule nobody chose. CI also pins the ruff version.
+line-length = 100
+target-version = "py39"   # the oldest Python the scripts are expected to run on
+
+[lint]
+select = [
+  "E",      # pycodestyle errors
+  "F",      # pyflakes
+  "W",      # pycodestyle warnings
+  "I",      # import sorting
+  "UP",     # pyupgrade
+  "B",      # bugbear
+  "SIM",    # simplify
+  "RUF",    # ruff's own
+  "BLE",    # blind except — enabled so the one deliberate case must say so
+]
+ignore = [
+  # Every failure in these scripts is a sys.exit with an explanation aimed at the
+  # operator, and several are long enough to be useful. The bodies stay readable.
+  "E501",
+]
+
+[lint.per-file-ignores]
+# The test scripts add the module directories to sys.path before importing them;
+# the imports cannot come first.
+"tests/*.py" = ["E402"]
