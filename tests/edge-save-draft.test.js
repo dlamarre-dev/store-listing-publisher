@@ -144,6 +144,53 @@ describe('what counts as a control', () => {
   });
 });
 
+// Partner Center's command bar, reduced to its shape:
+//   <v6_he-button>  <span>Save draft</span>            light DOM, carries the label
+//     #shadow-root  <button><slot></slot></button>     the real control
+// textContent finds the words on neither element — the host has them but is not a
+// button, the button has a <slot> and no words.
+function commandBarButton(label, opts) {
+  document.body.innerHTML = `<command-bar><div class="button-group">
+    <v6_he-button class="he-button"><span>${label}</span></v6_he-button>
+  </div></command-bar>`;
+  const host = document.querySelector('v6_he-button');
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `<button ${(opts || {}).disabled ? 'disabled' : ''}><slot></slot></button>`;
+  return { host, inner: shadow.querySelector('button') };
+}
+
+describe('a command bar built out of web components', () => {
+  test('is named by the label slotted into it', async () => {
+    const { pageSaveDraft } = loadPageFns('');
+    commandBarButton('Save draft');
+    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'saved', label: 'Save draft' });
+  });
+
+  // The host carries the name; the handler is on the control inside. Clicking the
+  // host alone dispatches an event the component never listens for — a save that
+  // silently does nothing, which is the exact failure this step exists to prevent.
+  test('is clicked on the control inside, not only on the host', async () => {
+    const { pageSaveDraft } = loadPageFns('');
+    const { inner } = commandBarButton('Save draft');
+    let pressed = 0;
+    inner.addEventListener('click', () => { pressed += 1; });
+    await pageSaveDraft();
+    expect(pressed).toBe(1);
+  });
+
+  test('and a greyed-out inner control still reads as nothing to save', async () => {
+    const { pageSaveDraft } = loadPageFns('');
+    commandBarButton('Save draft', { disabled: true });
+    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'nothing-to-save' });
+  });
+
+  test('the probe sees it too', async () => {
+    const { pageProbe } = loadPageFns('');
+    commandBarButton('Save draft');
+    expect(pageProbe().buttons).toContain('Save draft');
+  });
+});
+
 describe('when there is no save control', () => {
   const PAGE = `
     <button title="Add a language"></button>
