@@ -1,4 +1,5 @@
 const itemSel    = document.getElementById('item');
+const storeSel   = document.getElementById('store');
 const optTexts   = document.getElementById('optTexts');
 const optImages  = document.getElementById('optImages');
 const optGlobal  = document.getElementById('optGlobalImages');
@@ -83,7 +84,7 @@ function setRunning(busy) {
 
 function currentOpts(probeOnly) {
   return {
-    store: 'cws',
+    store: storeSel.value,
     itemSlug: itemSel.value,
     updateTexts: optTexts.checked,
     updateImages: optImages.checked,
@@ -132,6 +133,7 @@ loadBundledConfig()
     chrome.storage.local.get(['publisher_opts', 'run_log', 'run_state'], ({ publisher_opts: saved, run_log, run_state }) => {
       if (saved) {
         if (config.items.some(i => i.slug === saved.itemSlug)) itemSel.value = saved.itemSlug;
+        if (saved.store) storeSel.value = saved.store;
         optTexts.checked  = saved.updateTexts !== false;
         optImages.checked = !!saved.updateImages;
         optGlobal.checked = !!saved.updateGlobalImages;

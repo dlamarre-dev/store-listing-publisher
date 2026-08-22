@@ -9,7 +9,7 @@ It is split by **what each mechanism can actually do**, not by store:
 | | Package + release lifecycle | Listing metadata |
 |---|---|---|
 | **Chrome Web Store** | `cws/cws_publish.py` — API v2 | **`extension/`**, a Firefox add-on driving the dev console — [no API exists](#why-the-add-on-exists) |
-| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **Partner Center** — [no API exists](#why-the-add-on-exists) |
+| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **`extension/`** driving Partner Center — [no API exists](#why-the-add-on-exists) *(probe-only so far)* |
 | **addons.mozilla.org** | `amo/amo_publish.py` — API v5 | `amo/amo_publish.py` — API v5 |
 
 Four of those six boxes are real APIs. Of the two that are not, both are store
@@ -367,6 +367,36 @@ Two things to know before editing that file:
 
 Supporting another store means a new `extension/stores/<id>.js` exposing the same
 surface, documented at the bottom of `cws.js`.
+
+### Partner Center (Edge) — probe-only
+
+`stores/edge.js` exists and is registered, but only `probe` is implemented. Every
+other step returns `ok: false` with an instruction, so a run against it aborts
+instead of half-working — selectors written before reading the markup are fiction
+that looks like code.
+
+It is also structurally different from the CWS, which is why it could not be
+copied: **there is no language dropdown.** Partner Center's Store listings page is
+a table with one row per language, and each row's *Edit details* button opens a
+separate *Details for &lt;language&gt;* page — so `selectLanguage` becomes a
+navigation. Two things from Microsoft's docs are worth building around:
+
+- **"Duplicate this asset for all languages"** sits under each asset. Five
+  screenshots uploaded once and duplicated beats 5 × 43 uploads, and it is the
+  store's own feature rather than a trick.
+- Screenshots cap at **6**, sized 640×480 or 1280×800; descriptions run
+  **250–10,000** characters. That ceiling is why a consuming project may need to
+  shorten its listing text for this target and not the others.
+
+To finish it: click **Probe page** against a real Store listings page and read the
+dump. Its `links` gives the route to a language page (undocumented — hence the
+`edge.edgeListingPath` override, so learning it needs no code change), `tables`
+gives the row shape and the exact button label, and `textareas` vs `editables`
+decides how the description is written, since a rich-text editor would not take
+the CWS approach. The notes at the bottom of `stores/edge.js` list the steps.
+
+It will never press **Publish**: that is `edge/edge_publish.py`'s job, and the
+review before it stays human.
 
 ---
 

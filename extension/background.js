@@ -1,12 +1,14 @@
 // Orchestrates a store-listing publish run.
 //
-// lib/config.js, lib/locales.js, lib/paths.js and stores/cws.js load first
+// lib/config.js, lib/locales.js, lib/paths.js and the stores/ drivers load first
 // (manifest background scripts), so their functions are globals here.
 //
-// The orchestration is store-agnostic: it only talks to a driver object
-// (CwsDriver today) through the interface documented at the bottom of
-// stores/cws.js, and it knows nothing about how the project lays its assets
-// out — every path comes from a template in the config (lib/paths.js).
+// The orchestration is store-agnostic: it only talks to a driver object through
+// the interface documented at the bottom of stores/cws.js, and it knows nothing
+// about how the project lays its assets out — every path comes from a template
+// in the config (lib/paths.js). CwsDriver is complete; EdgeDriver is probe-only
+// for now and every other step refuses with an instruction, so a run against it
+// aborts rather than half-works.
 
 const SETTLE_PAGE_MS  = 6000;   // initial SPA render after tab load
 const SETTLE_FIELD_MS = 1200;   // after a language switch, before touching fields
@@ -14,7 +16,7 @@ const TAB_LOAD_MS     = 60000;
 const UPLOAD_WAIT_MS  = 45000;  // per-screenshot upload (thumbnail appears)
 const MAX_DELETES     = 12;     // safety bound on the delete loop
 
-const DRIVERS = { cws: CwsDriver };
+const DRIVERS = { cws: CwsDriver, edge: EdgeDriver };
 
 // ── native messaging ──────────────────────────────────────────────────────────
 

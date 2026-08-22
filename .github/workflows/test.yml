@@ -79,6 +79,16 @@ jobs:
               if 'REPO_ROOT / "extension" / "config.json"' not in Path(script).read_text():
                   problems.append(f'{script} must default to the same extension/config.json')
 
+          # Driving a store page needs permission for its host, and a driver the
+          # manifest does not load is dead code the popup can still select.
+          hosts = ' '.join(manifest['host_permissions'])
+          for store, host in (('cws', 'chrome.google.com'),
+                              ('edge', 'partner.microsoft.com')):
+              if f'stores/{store}.js' not in manifest['background']['scripts']:
+                  problems.append(f'stores/{store}.js is not a background script')
+              if host not in hosts:
+                  problems.append(f'{store}: no host permission for {host}')
+
           if problems:
               sys.exit('\n'.join(problems))
           print('manifest OK')
