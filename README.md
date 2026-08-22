@@ -412,6 +412,28 @@ the CWS approach. The notes at the bottom of `stores/edge.js` list the steps.
 It will never press **Publish**: that is `edge/edge_publish.py`'s job, and the
 review before it stays human.
 
+#### Adding the languages
+
+A run against this store starts by making sure every locale in it actually has a
+page to write to. Partner Center lists only the languages you have **added** — the
+uploaded package makes them *available*, which is not the same thing — so a fresh
+product shows one row even with 43 locales in its zip.
+
+That pass is gated on the **driver having `addLanguage`**, never on which store is
+selected, so a store without the concept skips it entirely and the orchestration
+stays store-agnostic. It is idempotent: it asks the page what is already there and
+adds only the rest, so re-running after an abort resumes instead of duplicating.
+That matters for something 42 steps long the first time and zero steps long every
+time after.
+
+Adding a language navigates to its new details page, so the listings page is
+reopened between each one. A dry run writes nothing and lists what it would add.
+
+One behaviour worth knowing: a language the store does not offer is **skipped and
+reported**, not fatal. Partner Center's menu carries 41 languages and Filipino is
+not among them, so aborting a 42-language pass over one that can never work would
+be the wrong call. Every other failure still stops the run.
+
 ---
 
 ## Security notes

@@ -185,6 +185,52 @@ describe('the Edge driver is honest about being unfinished', () => {
   });
 });
 
+// Enrolment — adding a language before it can be written — exists for exactly one
+// store, and that is precisely why it must not be written as "if this is Edge".
+// The orchestration stays store-agnostic by asking the driver what it can do.
+describe('enrolment is gated on a capability, not on a store name', () => {
+  const background = fs.readFileSync(path.join(ROOT, 'extension/background.js'), 'utf8');
+
+  test('only the Edge driver claims it', () => {
+    expect(typeof drivers.edge.addLanguage).toBe('function');
+    // The CWS dropdown lists every language whether you touched it or not, so
+    // there is nothing to enrol and the whole pass is skipped there.
+    expect(drivers.cws.addLanguage).toBeUndefined();
+  });
+
+  test('the orchestration checks for the method, never for the id', () => {
+    expect(background).toContain("typeof driver.addLanguage !== 'function'");
+    // A store name in the orchestration is the thing this design exists to avoid.
+    expect(background).not.toMatch(/driver\.id\s*===\s*['"]edge['"]/);
+    expect(background).not.toMatch(/opts\.store\s*===\s*['"]edge['"]/);
+  });
+
+  // Partner Center has no Filipino at all. Aborting a 42-language pass over one
+  // language that can never work would be the wrong call, so it is skipped and
+  // reported — while any other failure still stops the run.
+  test('a language the store does not offer is skipped, not fatal', () => {
+    expect(background).toContain("res?.step === 'language-not-offered'");
+    const clause = background.slice(background.indexOf("'language-not-offered'"));
+    const skip = clause.indexOf('continue');
+    const abort = clause.indexOf('throw new PublishError');
+    expect(skip).toBeGreaterThan(-1);
+    expect(skip).toBeLessThan(abort);
+  });
+
+  // Re-running has to resume, not duplicate: it is 42 steps the first time and
+  // zero every time after, and the first time can fail partway.
+  test('it asks what is already there before adding anything', () => {
+    const pass = background.slice(background.indexOf('async function enrolLocales'));
+    expect(pass.indexOf('listLanguages')).toBeLessThan(pass.indexOf('addLanguage(tabId'));
+    expect(pass).toContain('missingLocales(');
+  });
+
+  test('and writes nothing on a dry run', () => {
+    const pass = background.slice(background.indexOf('async function enrolLocales'));
+    expect(pass.indexOf('opts.dryRun')).toBeLessThan(pass.indexOf('addLanguage(tabId'));
+  });
+});
+
 describe('the manifest loads every driver', () => {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'extension/manifest.json'), 'utf8'));

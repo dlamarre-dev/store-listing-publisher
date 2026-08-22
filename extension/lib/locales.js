@@ -73,6 +73,27 @@ function languageNames(locale) {
   return [locale.name, ...(locale.altNames || [])];
 }
 
+// Which locales are not yet present, given the language labels a store reports.
+//
+// Some stores require a locale to be enrolled before it can be written at all:
+// Partner Center lists only the languages you have added, even when the uploaded
+// package makes 43 of them available. This is the pure half of that decision —
+// what is missing, and nothing about how to add it.
+//
+// Matched through languageNames rather than `name`, because a store's spelling is
+// not always ours. Partner Center writes Bangla for Bengali and Kiswahili for
+// Swahili, so comparing one name would report locales as missing that are already
+// there — and then try to add them a second time.
+function missingLocales(locales, presentNames) {
+  const present = new Set((presentNames || [])
+    .filter(Boolean)
+    .map(n => String(n).trim().toLowerCase()));
+  return locales.filter(locale => !languageNames(locale)
+    .some(n => present.has(String(n).trim().toLowerCase())));
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { validateLocales, filterLocales, needsLocaleWalk, languageNames };
+  module.exports = {
+    validateLocales, filterLocales, needsLocaleWalk, languageNames, missingLocales,
+  };
 }

@@ -1,5 +1,5 @@
 const {
-  validateLocales, filterLocales, needsLocaleWalk, languageNames,
+  validateLocales, filterLocales, needsLocaleWalk, languageNames, missingLocales,
 } = require('../extension/lib/locales');
 
 const TABLE = [
@@ -80,5 +80,66 @@ describe('languageNames', () => {
   test('the console label first, then any alternates', () => {
     expect(languageNames(TABLE[0])).toEqual(['English', 'English (United States)']);
     expect(languageNames(TABLE[1])).toEqual(['French']);
+  });
+});
+
+// Some stores require a locale to exist before it can be written: Partner Center
+// lists only the languages you have added, even though the uploaded package makes
+// all of them available. This decides what is missing — and getting it wrong in
+// either direction is quiet. Too many, and it tries to add languages that are
+// already there; too few, and it writes into a page that does not exist.
+describe('missingLocales', () => {
+  const ALIASED = [
+    { internal: 'bn', cws: 'bn', amo: null, name: 'Bengali', altNames: ['Bangla'] },
+    { internal: 'sw', cws: 'sw', amo: null, name: 'Swahili', altNames: ['Kiswahili'] },
+    { internal: 'nb', cws: 'no', amo: 'nb-NO', name: 'Norwegian',
+      altNames: ['Norwegian Bokmål', 'Norwegian (Bokmål)'] },
+  ];
+
+  test('an empty listing means every locale is missing', () => {
+    expect(missingLocales(TABLE, []).map(l => l.internal))
+      .toEqual(TABLE.map(l => l.internal));
+    expect(missingLocales(TABLE, null)).toHaveLength(TABLE.length);
+  });
+
+  test('a locale present under our own name is not missing', () => {
+    expect(missingLocales(TABLE, ['English', 'French']).map(l => l.internal))
+      .toEqual(['he', 'zh_CN']);
+  });
+
+  // The case the whole aliasing exists for. Partner Center writes Bangla and
+  // Kiswahili; matching on `name` alone would report both as missing and add
+  // them a second time.
+  test('a locale present under the store\'s own spelling is not missing', () => {
+    expect(missingLocales(ALIASED, ['Bangla', 'Kiswahili', 'Norwegian (Bokmål)']))
+      .toEqual([]);
+  });
+
+  test('one alias is enough, the others need not match', () => {
+    expect(missingLocales(ALIASED, ['Norwegian Bokmål']).map(l => l.internal))
+      .toEqual(['bn', 'sw']);
+  });
+
+  // Labels come out of a table cell, so they arrive with whatever spacing and
+  // casing the page had.
+  test('spacing and casing in the reported labels do not matter', () => {
+    expect(missingLocales(TABLE, ['  english  ', 'FRENCH']).map(l => l.internal))
+      .toEqual(['he', 'zh_CN']);
+  });
+
+  test('empty and null labels are ignored rather than matching something', () => {
+    expect(missingLocales(TABLE, ['', null, undefined, 'English']).map(l => l.internal))
+      .toEqual(['fr', 'he', 'zh_CN']);
+  });
+
+  // A store offering languages we do not ship is normal and must not confuse it.
+  test('extra languages on the listing are not our problem', () => {
+    expect(missingLocales(TABLE, ['English', 'French', 'Hebrew', 'Chinese (China)',
+                                  'Klingon', 'Welsh'])).toEqual([]);
+  });
+
+  test('it returns the locale objects, not just their codes', () => {
+    const [first] = missingLocales(TABLE, ['English', 'French', 'Hebrew']);
+    expect(first).toMatchObject({ internal: 'zh_CN', name: 'Chinese (China)' });
   });
 });
