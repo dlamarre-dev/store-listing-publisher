@@ -1138,6 +1138,19 @@ function pageUploadScreenshot(b64, filename) {
              detail: 'The <screenshots> element has no file input at all. It may '
                + 'already hold the maximum of six images.' };
   }
+  // The card each uploader belongs to: the outermost element under the slot that
+  // contains it. A replacement uploader shares its card with the thumbnail it
+  // would replace; the add uploader's card has no image in it. That is a fact
+  // about the structure, where the caption was a fact about the wording — and the
+  // wording moved once the slot stopped being empty.
+  const card = el => {
+    let p = el;
+    while (p.parentElement && p.parentElement !== root) p = p.parentElement;
+    return p;
+  };
+  const hasThumbnail = el => Array.from(card(el).querySelectorAll('img'))
+    .some(i => i.clientWidth >= 40 || !i.clientWidth);
+
   // Stops at the slot itself. Climbing past it reaches <screenshots>, whose text
   // contains every caption in the slot — including "Add Image" — so every input
   // would look like the add one, replacements included.
@@ -1150,16 +1163,28 @@ function pageUploadScreenshot(b64, filename) {
     }
     return '';
   };
-  // By its caption first — the probe found the empty uploader labelled "Add
-  // Image" — and by position otherwise, the add uploader being the one after all
-  // the replacements.
-  const byLabel = inputs.find(i => /add\s*image/i.test(nearestLabel(i)));
-  const input = byLabel || inputs[inputs.length - 1];
+
+  // Structure first, caption second, position last. Getting this wrong does not
+  // fail loudly: filling a replacement uploader replaces screenshot 1 with
+  // screenshot 2, the upload reports success, and the run times out waiting for a
+  // count that will never move.
+  const empty = inputs.filter(i => !hasThumbnail(i));
+  const byLabel = empty.find(i => /add\s*image/i.test(nearestLabel(i)));
+  // Last among the thumbnail-less ones, not first: the add uploader is rendered
+  // after the replacements, and with nothing to read that ordering is all there
+  // is to go on.
+  const input = byLabel || empty[empty.length - 1] || inputs[inputs.length - 1];
+  const chose = byLabel ? 'add-image' : (empty.length ? 'no-thumbnail' : 'last');
 
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const file = new File([bytes], filename, { type: 'image/png' });
   const dt = new DataTransfer();
   dt.items.add(file);
+  // Cleared first, the way a real re-selection leaves it. An uploader that reads
+  // files[0] and then resets its input sees no change when the same element is
+  // assigned again while still holding the previous file — and the second upload
+  // is exactly where this run stops.
+  try { input.value = ''; } catch (e) { /* some inputs refuse; assigning still works */ }
   input.files = dt.files;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1170,7 +1195,85 @@ function pageUploadScreenshot(b64, filename) {
     filename,
     size: bytes.length,
     inputs: inputs.length,
-    chose: byLabel ? 'add-image' : 'last',
+    chose,
+  };
+}
+
+// What the screenshot slot actually looks like right now.
+//
+// Called when an upload reports success and the count does not move — which has
+// now happened twice for two different reasons, and both times the run failed
+// with a bare timeout that said only "last: 1". A timeout that cannot say what
+// the page looked like sends the operator back for a probe, and by then the run
+// has been abandoned and the page has moved on.
+//
+// So this reports the whole slot: every file input with its caption and whether
+// anything is sitting in it, every thumbnail, and every control. Nothing here is
+// filtered on what the caller expected to find.
+function pageDescribeSlot() {
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const root = document.querySelector('screenshots')
+    || deepAll(document).find(el => el.tagName === 'SCREENSHOTS') || null;
+  if (!root) return { ok: false, step: 'no-screenshot-slot' };
+
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const near = el => {
+    let p = el.parentElement;
+    for (let i = 0; i < 6 && p && p !== root; i += 1) {
+      const t = txt(p);
+      if (t && t.length < 120) return t;
+      p = p.parentElement;
+    }
+    return null;
+  };
+  const chain = el => {
+    const out = [];
+    let p = el;
+    for (let i = 0; i < 6 && p; i += 1) {
+      const cls = (typeof p.className === 'string' ? p.className : '')
+        .trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+      out.push(p.tagName + (cls ? '.' + cls : ''));
+      p = p.parentElement || (p.getRootNode() && p.getRootNode().host) || null;
+    }
+    return out.join(' < ');
+  };
+
+  return {
+    ok: true,
+    fileInputs: deepAll(root)
+      .filter(el => el.tagName === 'INPUT' && (el.getAttribute('type') || '') === 'file')
+      .map(inp => ({
+        caption: near(inp),
+        // Whether the previous assignment is still sitting in it. An uploader
+        // that never drains its input is a different problem from one that never
+        // received a second file.
+        holds: inp.files && inp.files.length ? inp.files[0].name : null,
+        value: inp.value || null,
+        disabled: !!inp.disabled,
+        hidden: !visible(inp),
+        chain: chain(inp),
+      })),
+    images: deepAll(root).filter(el => el.tagName === 'IMG')
+      .map(i => ({ alt: i.alt || null, size: `${i.clientWidth}x${i.clientHeight}`,
+                   visible: visible(i) })),
+    controls: deepAll(root)
+      .filter(el => el.tagName === 'BUTTON' || el.tagName === 'A'
+        || (el.getAttribute('role') || '').toLowerCase() === 'button')
+      .filter(visible)
+      .map(el => (el.getAttribute('aria-label') || el.getAttribute('title') || txt(el)))
+      .filter(Boolean),
+    text: txt(root).slice(0, 400),
   };
 }
 
@@ -1346,6 +1449,11 @@ const EdgeDriver = {
   // one. A caller that wires it up should check both.
   duplicateScreenshots: tabId => edgeExec(tabId, pageDuplicateScreenshots),
 
+  // Optional, and the orchestration calls it only when an upload reports success
+  // and the count does not follow. A bare timeout has now hidden two different
+  // causes; this is what turns the next one into one round trip instead of three.
+  describeAssets: tabId => edgeExec(tabId, pageDescribeSlot),
+
   // Puts one PNG into the screenshot slot. It refused until a probe of a real
   // details page showed what separates the four slots — the component each lives
   // in, <screenshots> for this one — because the alternative was picking between
@@ -1403,8 +1511,11 @@ const EdgeDriver = {
 //   so the conclusion drawn at the time, that a filled slot exposes none, had the
 //   fact backwards. It cost a run: taking the first input in the slot replaced
 //   screenshot 1 with screenshot 2, the count stayed at 1, and the upload loop
-//   timed out waiting for it to reach 2. The one to fill is the one captioned
-//   "Add Image", or failing that the last.
+//   timed out waiting for it to reach 2. The one to fill is decided by structure,
+//   not by wording: a replacement uploader shares its card with the thumbnail it
+//   would replace, the add uploader's card has none. The caption "Add Image" is
+//   read first where it is there, but it was only there while the slot was empty
+//   — which is why the caption rule passed its first run and failed its second.
 // - The delete buttons read "Delete", not "Delete screenshot <file>" — an earlier
 //   assumption in this driver, never observed. Inside the right component a plain
 //   "Delete" is unambiguous, which is the whole argument for scoping by component
