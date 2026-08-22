@@ -70,7 +70,7 @@ function loadPageFns(html, onTick) {
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
   sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
     + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
-    + ' pageListLanguages, pageDescribeSlot };');
+    + ' pageListLanguages, pageDescribeSlot, pageApplyUpload };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -426,17 +426,14 @@ describe('the screenshot slot', () => {
       .toEqual(['Screenshot shot0.png', 'Screenshot shot1.png']);
   });
 
-  test('uploading fills the slot input, never the logo one', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
+  test('uploading fills the slot input, never the logo one', () => {
+    const { pageApplyUpload } = loadPageFns('');
     page();
-    const [logoInput, slotInput] = document.querySelectorAll('input[type="file"]');
-    // The page has to answer, because the upload no longer claims success on the
-    // strength of having dispatched an event.
-    slotInput.addEventListener('change', () => addThumb('screenshots'));
-
     const b64 = Buffer.from('PNGDATA').toString('base64');
-    expect(await pageUploadScreenshot(b64, 'Promo_1_fr.png'))
-      .toMatchObject({ ok: true, filename: 'Promo_1_fr.png', via: 1 });
+    expect(pageApplyUpload(b64, 'Promo_1_fr.png', 1))
+      .toMatchObject({ ok: true, filename: 'Promo_1_fr.png' });
+
+    const [logoInput, slotInput] = document.querySelectorAll('input[type="file"]');
     expect(logoInput.files).toBeNull();
     expect(slotInput.files[0].name).toBe('Promo_1_fr.png');
   });
@@ -472,7 +469,7 @@ describe('the screenshot slot', () => {
     const fns = loadPageFns('');
     page({ withSlot: false });
     expect(fns.pageCountScreenshots()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
-    expect(await fns.pageUploadScreenshot('AAA=', 'x.png'))
+    expect(fns.pageApplyUpload('AAA=', 'x.png', 1))
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
     expect(await fns.pageDeleteOneScreenshot())
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
@@ -480,10 +477,10 @@ describe('the screenshot slot', () => {
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
   });
 
-  test('and the refusal shows the inputs it would not choose between', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
+  test('and the refusal shows the inputs it would not choose between', () => {
+    const { pageApplyUpload } = loadPageFns('');
     page({ withSlot: false });
-    const out = await pageUploadScreenshot('AAA=', 'x.png');
+    const out = pageApplyUpload('AAA=', 'x.png', 1);
     expect(out.fileInputs).toHaveLength(1);
     expect(out.fileInputs[0].chain).toMatch(/SECTION/);
   });
@@ -689,7 +686,15 @@ describe('the slot description', () => {
 // Three guesses have each reported success without looking, and each cost a round
 // trip. So the step applies a mechanism, VERIFIES it against the thumbnail count,
 // and only then tries the next — and says which one worked.
-describe('accepting an upload', () => {
+
+// ── the three gestures ───────────────────────────────────────────────────────
+//
+// pageApplyUpload makes ONE gesture and returns. It carried the verify-and-
+// escalate loop until a run stopped after two screenshots with no error at all:
+// an injected script that runs for 45 seconds and outlives a re-render dies with
+// it, and its promise never settles. The loop is the driver's now; what is left
+// here is the gesture, and each one has to be the gesture it claims.
+describe('the three upload gestures', () => {
   const slot = () => {
     document.body.innerHTML = '<screenshots><div class="card">'
       + '<span>Add Image</span><form><input type="file" accept=".png"></form>'
@@ -699,72 +704,63 @@ describe('accepting an upload', () => {
     return input;
   };
   const b64 = Buffer.from('PNG').toString('base64');
-
-  test('a page that answers the picker settles on the first mechanism', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    slot().addEventListener('change', () => addThumb('screenshots'));
-    expect(await pageUploadScreenshot(b64, 'p1.png'))
-      .toMatchObject({ ok: true, via: 1, before: 0, after: 1 });
-  });
-
-  // A component can listen for a drop without listening for a picker change. The
-  // card announces its accepted file types, so it is a drop zone too.
-  test('a page that only answers a drop escalates to the second', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    slot();
-    document.querySelector('.card')
-      .addEventListener('drop', () => addThumb('screenshots'));
-    const out = await pageUploadScreenshot(b64, 'p1.png');
-    expect(out).toMatchObject({ ok: true, via: 2 });
-    expect(out.tried.map((t) => t.mechanism)).toEqual([1, 2]);
-  });
-
-  // Some forms commit on blur rather than on change.
-  test('and one that only answers a blur escalates to the third', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    slot().addEventListener('blur', () => addThumb('screenshots'));
-    expect(await pageUploadScreenshot(b64, 'p1.png')).toMatchObject({ ok: true, via: 3 });
-  });
-
-  // The escalation exists to be verified, not to be optimistic: a page that takes
-  // nothing must fail, and say what was tried.
-  test('a page that takes nothing fails and lists what was tried', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    slot();
-    const out = await pageUploadScreenshot(b64, 'p1.png');
-    expect(out).toMatchObject({ ok: false, step: 'upload-not-accepted', before: 0, after: 0 });
-    expect(out.tried.map((t) => t.mechanism)).toEqual([1, 2, 3]);
-    expect(out.detail).toMatch(/thumbnail count/);
-  });
-
-  // The reason to verify before escalating: an upload that merely takes its time
-  // must not be overtaken by the next mechanism and land twice. A page that
-  // answers the picker never sees mechanism 2 at all.
-  test('a mechanism that works is not followed by another', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    slot().addEventListener('change', () => addThumb('screenshots'));
-    let drops = 0;
-    document.addEventListener('drop', () => { drops += 1; }, true);
-    const out = await pageUploadScreenshot(b64, 'p1.png');
-    expect(out.tried).toHaveLength(1);
-    expect(drops).toBe(0);
-  });
-
-  // Between attempts the component may replace its own input; holding a detached
-  // element is how an attempt fails with nothing to show for it.
-  test('the input is re-picked before each attempt', async () => {
-    const { pageUploadScreenshot } = loadPageFns('');
-    const first = slot();
-    // Mechanism 1 lands on the original input; the page then swaps it out, and
-    // mechanism 3 has to find the replacement.
-    first.addEventListener('change', () => {
-      const form = document.querySelector('form');
-      form.innerHTML = '<input type="file" class="fresh" accept=".png">';
-      const next = form.querySelector('input');
-      Object.defineProperty(next, 'files', { value: null, writable: true, configurable: true });
-      next.addEventListener('blur', () => addThumb('screenshots'));
+  const seen = () => {
+    const events = [];
+    document.addEventListener('input', (e) => events.push(e.type), true);
+    document.addEventListener('change', (e) => events.push(e.type), true);
+    document.addEventListener('focus', (e) => events.push(e.type), true);
+    document.addEventListener('blur', (e) => events.push(e.type), true);
+    ['dragenter', 'dragover', 'drop'].forEach((t) => {
+      document.addEventListener(t, (e) => events.push(e.type), true);
     });
-    expect(await pageUploadScreenshot(b64, 'p1.png')).toMatchObject({ ok: true, via: 3 });
-    expect(document.querySelector('.fresh').files[0].name).toBe('p1.png');
+    return events;
+  };
+
+  test('1 is a file picker: the input is filled, then input and change', () => {
+    const { pageApplyUpload } = loadPageFns('');
+    const input = slot();
+    const events = seen();
+    expect(pageApplyUpload(b64, 'p.png', 1)).toMatchObject({ ok: true, mechanism: 1 });
+    expect(input.files[0].name).toBe('p.png');
+    expect(events).toEqual(['input', 'change']);
+  });
+
+  // A drop does not set input.files, so neither does this. Asserting that is the
+  // point: a "drop" that quietly assigns files is just mechanism 1 again, and
+  // would make the escalation look like it had found something it had not.
+  test('2 is a drop on the card, and leaves the input alone', () => {
+    const { pageApplyUpload } = loadPageFns('');
+    const input = slot();
+    const events = seen();
+    expect(pageApplyUpload(b64, 'p.png', 2)).toMatchObject({ ok: true, mechanism: 2 });
+    expect(input.files).toBeNull();
+    expect(events).toEqual(['dragenter', 'dragover', 'drop']);
+  });
+
+  test('and the drop carries the file, not just the event', () => {
+    const { pageApplyUpload } = loadPageFns('');
+    slot();
+    let dropped = null;
+    document.querySelector('.card').addEventListener('drop', (e) => {
+      dropped = e.dataTransfer.files[0].name;
+    });
+    pageApplyUpload(b64, 'p.png', 2);
+    expect(dropped).toBe('p.png');
+  });
+
+  test('3 fills the input and ends on blur, for a form that commits there', () => {
+    const { pageApplyUpload } = loadPageFns('');
+    const input = slot();
+    const events = seen();
+    expect(pageApplyUpload(b64, 'p.png', 3)).toMatchObject({ ok: true, mechanism: 3 });
+    expect(input.files[0].name).toBe('p.png');
+    expect(events).toEqual(['focus', 'input', 'change', 'blur']);
+  });
+
+  test('an unknown mechanism falls back to the picker rather than doing nothing', () => {
+    const { pageApplyUpload } = loadPageFns('');
+    const input = slot();
+    expect(pageApplyUpload(b64, 'p.png', 99)).toMatchObject({ ok: true });
+    expect(input.files[0].name).toBe('p.png');
   });
 });
