@@ -331,8 +331,22 @@ page.
   aborted run at `pl`. Ignored, with a log line, when no per-language step is
   ticked.
 - **Probe page** — dumps the page's structure (dropdowns, textareas, file
-  inputs, headings, buttons) to the log. This is the debugging entry point when
-  Google changes the console.
+  inputs, headings, buttons) to the log. This is the debugging entry point when a
+  console changes.
+
+  **It reuses a tab already showing that store** and only opens the listing page
+  when there is none. That matters more than it sounds: the pages worth dumping
+  are usually ones you navigated to — a language's details page, a form partway
+  through — and opening a fresh tab is exactly what destroys them. Navigate to
+  what you want to see, then click Probe.
+
+  A tab is claimed by the driver's own `ownsUrl`, so a page it does not own is
+  never injected into, and the log says which tab it used.
+
+  The Edge probe also **opens the "Add a language" control itself** and closes it
+  again, because you cannot hold a menu open across the click: pressing the
+  toolbar button moves focus out of the page, and a menu that closes on blur is
+  gone before the probe runs.
 
 A run aborts at the first failed step, with diagnostics, rather than risk
 writing into the wrong locale. Fix, then resume with `from:<locale>`.

@@ -149,6 +149,88 @@ function pageProbe() {
   };
 }
 
+// Opens the "Add a language" control and dumps its options, then closes it.
+//
+// A separate function because it CLICKS, and a probe that clicks should say so in
+// its name. It exists because the alternative does not work: opening the popup
+// moves focus out of the page, and a menu that closes on blur is gone before the
+// probe runs — so the operator cannot hold it open for us. Opening it from inside
+// the page is the only reliable way to see what is in it.
+//
+// The options are what an add-the-missing-42-languages step needs: how Partner
+// Center names each language, so our locale table can be matched against it.
+async function pageProbeAddLanguage() {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const label = el => (el.getAttribute('aria-label') || txt(el)).trim();
+
+  const control = Array.from(document.querySelectorAll(
+    'button, [role="button"], select, [role="combobox"], input'))
+    .filter(visible)
+    .find(el => /add a language/i.test(label(el))
+             || /add a language/i.test(el.getAttribute('placeholder') || ''));
+
+  if (!control) {
+    return { ok: false, step: 'no-add-language-control',
+             detail: 'No "Add a language" control on this page. Is this the Store '
+               + 'listings page?' };
+  }
+
+  const describe = el => ({
+    tag: el.tagName,
+    role: el.getAttribute('role'),
+    ariaLabel: el.getAttribute('aria-label'),
+    expanded: el.getAttribute('aria-expanded'),
+    controls: el.getAttribute('aria-controls'),
+  });
+  const beforeControl = describe(control);
+
+  // A native <select> needs no opening: its options are already in the DOM.
+  if (control.tagName === 'SELECT') {
+    return {
+      ok: true, kind: 'select', control: beforeControl,
+      options: Array.from(control.options).map(o => ({ value: o.value, text: txt(o) })),
+    };
+  }
+
+  control.click();
+  await sleep(1200);
+
+  const optionEls = Array.from(document.querySelectorAll(
+    '[role="option"], [role="menuitem"], [role="menuitemradio"], li, option'))
+    .filter(visible)
+    .filter(el => { const t = txt(el); return t && t.length < 60; });
+
+  const result = {
+    ok: true,
+    kind: 'menu',
+    control: describe(control),
+    optionCount: optionEls.length,
+    options: optionEls.slice(0, 80).map(el => ({
+      tag: el.tagName,
+      role: el.getAttribute('role'),
+      text: txt(el),
+      value: el.getAttribute('value') || el.getAttribute('data-value') || null,
+      ariaLabel: el.getAttribute('aria-label'),
+    })),
+    // Where the options live, so the option lookup can be scoped rather than
+    // matching anything on the page that happens to look like a list item.
+    containers: [...new Set(optionEls.map(el => {
+      const p = el.closest('[role="listbox"], [role="menu"], ul, div[id]');
+      return p ? `${p.tagName}${p.id ? '#' + p.id : ''}[role=${p.getAttribute('role')}]` : '(none)';
+    }))].slice(0, 6),
+  };
+
+  // Put the page back as it was: a probe must not leave a menu hanging open.
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(200);
+  return result;
+}
+
 // Reads the Store listings table: which languages have been ADDED, and what
 // state each is in.
 //
@@ -292,7 +374,21 @@ const EdgeDriver = {
 
   isLoginUrl: url => EDGE.LOGIN_RE.test(url),
 
-  probe: tabId => edgeExec(tabId, pageProbe),
+  // Whether a tab belongs to this store, so a probe can reuse a page already
+  // open instead of navigating away from it — which is the only way to dump a
+  // language's details page. Matches the Edge dashboard and nothing else on
+  // partner.microsoft.com, which also hosts unrelated programs.
+  ownsUrl: url => /^https?:\/\/partner\.microsoft\.com\/.*\/microsoftedge\//.test(url),
+
+  // One click has to be enough, so the probe also opens the "Add a language"
+  // control and reports its options. On a page that has no such control — a
+  // language's details page — that half reports ok:false and the rest is
+  // unaffected.
+  async probe(tabId) {
+    const page = await edgeExec(tabId, pageProbe);
+    const addLanguage = await edgeExec(tabId, pageProbeAddLanguage);
+    return { ...(page || {}), addLanguage };
+  },
 
   // Which languages have actually been added to the listing. Not part of the
   // driver interface — the orchestration does not call it — but it is how a run

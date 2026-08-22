@@ -127,6 +127,20 @@ function waitForTabComplete(tabId, timeoutMs = TAB_LOAD_MS) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// A tab already showing this store, preferring the active one.
+//
+// Queried across every window rather than asking for the current one: clicking
+// the toolbar button moves focus to the popup, so "the current window's active
+// tab" is not reliably the page the operator was just looking at. Filtering the
+// whole list on the driver's own host is both simpler and safe — a tab this
+// driver does not own is never touched.
+async function findStoreTab(driver) {
+  if (typeof driver.ownsUrl !== 'function') return null;
+  const tabs = await chrome.tabs.query({});
+  const owned = tabs.filter(t => t.url && driver.ownsUrl(t.url));
+  return owned.find(t => t.active) || owned[0] || null;
+}
+
 // ── failure type carrying page diagnostics ────────────────────────────────────
 
 class PublishError extends Error {
@@ -278,15 +292,30 @@ async function runPublish(rawConfig, opts, onProgress) {
 
   // Open the listing page. The tab stays open at the end — the manual
   // "Save draft" + review is the operator's job.
-  const url = driver.listingUrl(config, item);
-  onProgress(`Opening ${url}`);
-  const tab = await chrome.tabs.create({ url, active: true });
-  await waitForTabComplete(tab.id);
-  const { url: finalUrl } = await chrome.tabs.get(tab.id);
-  if (driver.isLoginUrl(finalUrl)) {
-    throw new Error(`Not logged in — redirected to ${finalUrl}. Log in in this profile and re-run.`);
+  //
+  // A probe REUSES a tab already showing this store, and only opens the listing
+  // page when there is none. Opening a fresh tab is what a probe wants the first
+  // time and exactly what it must not do afterwards: the pages worth dumping are
+  // the ones you navigated to — a language's details page, a menu you opened —
+  // and navigating away is precisely what destroys them.
+  let tab = null;
+  if (opts.probeOnly) tab = await findStoreTab(driver);
+
+  if (tab) {
+    onProgress(`Probing the open tab: ${tab.url}`);
+    // Already rendered — no need to wait out the SPA's first paint.
+    await sleep(500);
+  } else {
+    const url = driver.listingUrl(config, item);
+    onProgress(`Opening ${url}`);
+    tab = await chrome.tabs.create({ url, active: true });
+    await waitForTabComplete(tab.id);
+    const { url: finalUrl } = await chrome.tabs.get(tab.id);
+    if (driver.isLoginUrl(finalUrl)) {
+      throw new Error(`Not logged in — redirected to ${finalUrl}. Log in in this profile and re-run.`);
+    }
+    await sleep(SETTLE_PAGE_MS);
   }
-  await sleep(SETTLE_PAGE_MS);
 
   if (opts.probeOnly) {
     const probe = await driver.probe(tab.id);

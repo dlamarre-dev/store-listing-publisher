@@ -70,10 +70,47 @@ describe.each(Object.entries(drivers))('%s driver', (name, driver) => {
     expect(driver.assetProfile.length).toBeGreaterThan(0);
   });
 
+  // ownsUrl is what lets a probe reuse a page already open instead of navigating
+  // away from it. It decides where the driver will inject, so a loose pattern is
+  // the difference between "dump this page" and "run my code on any site".
+  test('claims its own host and nothing else', () => {
+    expect(typeof driver.ownsUrl).toBe('function');
+    const foreign = [
+      'https://example.com/',
+      'https://partner.microsoft.com.evil.test/dashboard/microsoftedge/x',
+      'https://chrome.google.com.evil.test/webstore/devconsole/x',
+      'about:blank',
+      'moz-extension://abc/popup.html',
+    ];
+    for (const url of foreign) {
+      expect({ url, owned: driver.ownsUrl(url) }).toEqual({ url, owned: false });
+    }
+  });
+
   test('every step is callable', () => {
     for (const step of STEPS) {
       expect(typeof driver[step]).toBe('function');
     }
+  });
+});
+
+describe('ownsUrl recognises each store', () => {
+  test('the CWS dev console', () => {
+    expect(drivers.cws.ownsUrl(
+      'https://chrome.google.com/webstore/devconsole/abc/def/edit/listing?hl=en')).toBe(true);
+    // Not the public storefront, which the driver has no business touching.
+    expect(drivers.cws.ownsUrl(
+      'https://chrome.google.com/webstore/detail/abc')).toBe(false);
+  });
+
+  test('the Edge dashboard, including the locale segment Partner Center adds', () => {
+    expect(drivers.edge.ownsUrl(
+      'https://partner.microsoft.com/dashboard/microsoftedge/GUID/listings')).toBe(true);
+    expect(drivers.edge.ownsUrl(
+      'https://partner.microsoft.com/en-us/dashboard/microsoftedge/GUID/listings')).toBe(true);
+    // partner.microsoft.com hosts other programs; those are not ours.
+    expect(drivers.edge.ownsUrl(
+      'https://partner.microsoft.com/en-us/dashboard/commercial-marketplace/x')).toBe(false);
   });
 });
 
@@ -100,9 +137,17 @@ describe('the Edge driver is honest about being unfinished', () => {
 
   test.each(IMPLEMENTED)('%s is wired to the page, not stubbed', async (step) => {
     const result = await drivers.edge[step](1, { name: 'English' });
-    // The sandbox's executeScript resolves to null, so reaching the page is what
-    // produces null here. A stub would hand back the not-implemented object.
-    expect(result).toBeNull();
+    // Says what it means rather than pinning a shape: the sandbox's
+    // executeScript resolves to null, so an implemented step comes back null or
+    // wrapping null. Only a stub carries the not-implemented marker.
+    expect(result && result.step).not.toBe('not-implemented');
+  });
+
+  // One Probe click has to be enough, because the operator cannot hold a menu
+  // open across it — clicking the toolbar button moves focus out of the page.
+  test('probing reports the Add a language control in the same dump', async () => {
+    const result = await drivers.edge.probe(1);
+    expect(result).toHaveProperty('addLanguage');
   });
 
   test('its listing URL is built from the product id and is overridable', () => {
