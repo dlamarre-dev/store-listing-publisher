@@ -200,6 +200,86 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
   }
 }
 
+// ── enrolment: stores where a locale must exist before it can be written ─────
+//
+// Gated on the DRIVER having addLanguage, not on which store it is: a store
+// without the concept simply has no such method and this whole pass is skipped.
+// The Chrome Web Store lists all 43 languages in its dropdown whether you have
+// touched them or not; Partner Center lists only the ones you added, even though
+// the uploaded package makes them available. That difference is the whole reason
+// this exists.
+//
+// Idempotent on purpose. It asks the page what is already there and adds only the
+// rest, so re-running after an abort resumes rather than duplicating — which
+// matters for a pass that is 42 steps long the first time and zero steps long
+// every time after.
+async function enrolLocales(driver, tabId, locales, listingUrl, opts, onProgress) {
+  if (typeof driver.addLanguage !== 'function') return;
+
+  const listed = await driver.listLanguages(tabId);
+  if (!listed?.ok) {
+    throw new PublishError('Could not read which languages the listing has', listed);
+  }
+  const present = listed.languages.map(l => l.language);
+  const missing = missingLocales(locales, present);
+
+  onProgress(`Languages on the listing: ${present.length} (${present.join(', ')})`);
+  if (!missing.length) {
+    onProgress('Nothing to add — every locale in this run already has a page.');
+    return;
+  }
+
+  if (opts.dryRun) {
+    onProgress(`Would add ${missing.length}: `
+      + missing.map(l => l.internal).join(', '));
+    return;
+  }
+
+  onProgress(`Adding ${missing.length} language(s)…`);
+  const added = [];
+  const notOffered = [];
+
+  for (const [index, locale] of missing.entries()) {
+    // Adding a language navigates to its new details page, so the listings page
+    // has to be reopened before the next one. Returning here rather than at the
+    // end of the loop also means a failure leaves the tab somewhere predictable.
+    await chrome.tabs.update(tabId, { url: listingUrl });
+    await waitForTabComplete(tabId);
+    await sleep(SETTLE_PAGE_MS);
+
+    const res = await driver.addLanguage(tabId, locale);
+    const label = `${locale.internal} (${locale.name})`;
+    const counter = `[${index + 1}/${missing.length}]`;
+
+    if (res?.ok) {
+      added.push(locale.internal);
+      onProgress(`  ${counter} ${label} → added as "${res.added}"`);
+      continue;
+    }
+
+    // A language the store does not offer is a store limit, not a failure of
+    // this run: Partner Center has no Filipino at all. Aborting 42 languages
+    // over one that can never work would be the wrong call, so it is skipped
+    // loudly and reported at the end.
+    if (res?.step === 'language-not-offered') {
+      notOffered.push(locale.internal);
+      onProgress(`  ${counter} ${label} → NOT OFFERED by this store, skipped`);
+      continue;
+    }
+
+    if (res?.detail) onProgress('Diagnostics: ' + fmtDetail(res));
+    throw new PublishError(`Could not add "${locale.name}"`, res);
+  }
+
+  onProgress(`Added ${added.length}`
+    + (notOffered.length ? `; ${notOffered.length} not offered: ${notOffered.join(', ')}` : ''));
+
+  // Back to the listings page, so the locale walk starts where it expects to.
+  await chrome.tabs.update(tabId, { url: listingUrl });
+  await waitForTabComplete(tabId);
+  await sleep(SETTLE_PAGE_MS);
+}
+
 // ── per-locale step ───────────────────────────────────────────────────────────
 
 async function publishLocale(driver, tabId, locale, text, opts, ctx, onProgress) {
@@ -330,6 +410,11 @@ async function runPublish(rawConfig, opts, onProgress) {
   // throws, and the global block below sits *after* this loop, so a global-only
   // run could abort before ever reaching what it was asked to do.
   if (walkLocales) {
+    // Before writing anything: on a store that requires it, make sure every
+    // locale in this run actually has a page to write to. A no-op elsewhere.
+    await enrolLocales(driver, tab.id, locales, driver.listingUrl(config, item),
+                       opts, onProgress);
+
     for (const locale of locales) {
       try {
         await publishLocale(driver, tab.id, locale, texts[locale.internal], opts, ctx, onProgress);
