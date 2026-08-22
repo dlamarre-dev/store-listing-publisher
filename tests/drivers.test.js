@@ -200,9 +200,31 @@ describe('enrolment is gated on a capability, not on a store name', () => {
 
   test('the orchestration checks for the method, never for the id', () => {
     expect(background).toContain("typeof driver.addLanguage !== 'function'");
+    expect(background).toContain("typeof driver.saveDraft === 'function'");
     // A store name in the orchestration is the thing this design exists to avoid.
     expect(background).not.toMatch(/driver\.id\s*===\s*['"]edge['"]/);
     expect(background).not.toMatch(/opts\.store\s*===\s*['"]edge['"]/);
+  });
+
+  // Each language is its own page on Partner Center and leaving one discards the
+  // field, so a run without this writes 43 descriptions and keeps none. The CWS
+  // keeps all 43 behind one dropdown, so its single manual save still covers them
+  // and it deliberately has no saveDraft.
+  test('only the store that needs saving per language claims saveDraft', () => {
+    expect(typeof drivers.edge.saveDraft).toBe('function');
+    expect(drivers.cws.saveDraft).toBeUndefined();
+  });
+
+  // A failed save must abort. Writing and not saving is the one failure mode that
+  // looks like success in the log and leaves nothing behind.
+  test('a save that did not happen stops the run', () => {
+    const clause = background.slice(background.indexOf('driver.saveDraft(tabId)'));
+    expect(clause).toContain('throw new PublishError');
+    expect(clause).toContain('lost silently');
+  });
+
+  test('and a dry run never saves', () => {
+    expect(background).toContain("!opts.dryRun && typeof driver.saveDraft === 'function'");
   });
 
   // Partner Center has no Filipino at all. Aborting a 42-language pass over one

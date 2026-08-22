@@ -6,9 +6,17 @@
 // The orchestration is store-agnostic: it only talks to a driver object through
 // the interface documented at the bottom of stores/cws.js, and it knows nothing
 // about how the project lays its assets out — every path comes from a template
-// in the config (lib/paths.js). CwsDriver is complete; EdgeDriver is probe-only
-// for now and every other step refuses with an instruction, so a run against it
-// aborts rather than half-works.
+// in the config (lib/paths.js).
+//
+// Where the two stores genuinely differ, the difference is a driver CAPABILITY
+// this file asks about, never a store name it checks for:
+//
+//   addLanguage  a locale that must be enrolled before it can be written
+//   saveDraft    a page that discards the field if you leave without saving
+//
+// Both exist because Partner Center gives each language its own page while the
+// Chrome Web Store keeps all 43 behind one dropdown. A driver without the method
+// skips the step, so adding a store costs nothing here.
 
 const SETTLE_PAGE_MS  = 6000;   // initial SPA render after tab load
 const SETTLE_FIELD_MS = 1200;   // after a language switch, before touching fields
@@ -306,7 +314,10 @@ async function enrolLocales(driver, tabId, locales, listingUrl, opts, onProgress
 async function publishLocale(driver, tabId, locale, text, opts, ctx, onProgress) {
   onProgress(`${locale.internal} (${locale.name})`);
 
-  const sel = await driver.selectLanguage(tabId, locale);
+  // ctx carries the listing URL, which a store that navigates per language needs
+  // to get back to before it can pick the next one. Stores that switch in place
+  // ignore it.
+  const sel = await driver.selectLanguage(tabId, locale, ctx);
   if (!sel?.ok) throw new PublishError(`Language "${locale.name}" not selectable`, sel);
   onProgress(`  language → "${sel.selected}"${sel.confirmed === false ? ' (UNCONFIRMED)' : ''}`);
   if (sel.confirmed === false && !opts.dryRun) {
@@ -331,6 +342,27 @@ async function publishLocale(driver, tabId, locale, text, opts, ctx, onProgress)
     } else {
       await replaceScreenshots(driver, tabId, ctx, locale, 'localized', onProgress);
     }
+  }
+
+  // Stores that give each language its own page have to be saved before leaving
+  // it: navigating away discards the field. The Chrome Web Store keeps all 43
+  // behind one dropdown, so it has no saveDraft and its single manual "Save
+  // draft" at the end still commits everything — which is why this is gated on
+  // the driver having the method rather than on a flag.
+  //
+  // Nothing to save is a success: the console greys the control out when the
+  // field already held what we wrote.
+  if (!opts.dryRun && typeof driver.saveDraft === 'function') {
+    const saved = await driver.saveDraft(tabId);
+    if (!saved?.ok) {
+      throw new PublishError(
+        `Wrote ${locale.internal} but could not save it — the page discards a `
+        + 'description when you leave without saving, so this would have been '
+        + 'lost silently', saved);
+    }
+    onProgress(saved.step === 'nothing-to-save'
+      ? `  already up to date ("${saved.label}" was disabled)`
+      : `  saved ("${saved.label}")`);
   }
 }
 
@@ -369,7 +401,12 @@ async function runPublish(rawConfig, opts, onProgress) {
   // card. English by convention; a project can say otherwise.
   const globalLocale = config.locales.find(l => l.internal === (config.globalLocale || 'en'))
     || config.locales[0];
-  const ctx = { assetsRoot: config.assets.root, profile, item };
+  // listingUrl rides along because a store that gives each language its own page
+  // has to come back here before it can pick the next one.
+  const ctx = {
+    assetsRoot: config.assets.root, profile, item,
+    listingUrl: driver.listingUrl(config, item),
+  };
 
   if (!opts.probeOnly) onProgress(`Assets root: ${config.assets.root}`);
 
@@ -438,7 +475,7 @@ async function runPublish(rawConfig, opts, onProgress) {
     // run adds nothing, and a store can refuse a language outright — and walking
     // a locale with no page is an abort, not a skip.
     const walkable = await enrolLocales(
-      driver, tab.id, locales, driver.listingUrl(config, item), opts, onProgress);
+      driver, tab.id, locales, ctx.listingUrl, opts, onProgress);
     if (walkable.length !== locales.length) {
       onProgress(`Walking ${walkable.length} of ${locales.length} locale(s).`);
     }
