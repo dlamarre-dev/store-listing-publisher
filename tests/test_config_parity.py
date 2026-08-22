@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Pins amo_publish and cws_publish to the same config behaviour.
+"""Pins amo_publish, cws_publish and edge_publish to the same config behaviour.
 
     python tests/test_config_parity.py
 
-The two scripts each carry their own copy of load_config / merge_config /
-resolve_template, deliberately: amo_publish.py is in service and validated, and
-two stores is not enough to justify a shared package. The risk of that choice is
-not the duplicated lines, it is DRIFT — one copy learning a rule the other does
-not, so the same config file means two different things depending on which half
-reads it. This is the test that makes drift loud.
+Each script carries its own copy of load_config / merge_config /
+resolve_template. The risk of that is not the duplicated lines, it is DRIFT —
+one copy learning a rule the others do not, so the same config file means
+different things depending on which half reads it. This is the test that makes
+drift loud.
 
-If a third store ever appears, that is the signal to extract a shared module and
-delete this file.
+THREE copies is the threshold the earlier version of this file named as the
+signal to extract a shared module. That extraction is now owed: it was deferred
+while amo_publish.py was the only one in live service, and the argument for
+deferring it weakens with every store. Until then, this file is what keeps the
+three honest — and it should be deleted by whoever does the extraction.
 """
 import json
 import sys
@@ -19,11 +21,16 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "cws"))
-sys.path.insert(0, str(REPO / "amo"))
+for module_dir in ("amo", "cws", "edge"):
+    sys.path.insert(0, str(REPO / module_dir))
 
 import amo_publish as A
 import cws_publish as C
+import edge_publish as E
+
+# Every implementation that must agree. Adding a store means adding it here, and
+# nothing else in this file.
+IMPLEMENTATIONS = [("amo", A), ("cws", C), ("edge", E)]
 
 failures = []
 
@@ -34,9 +41,20 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
-def both(fn_name, *args):
-    """Calls the same function on both modules and returns the two results."""
-    return getattr(A, fn_name)(*args), getattr(C, fn_name)(*args)
+def every(fn_name, *args):
+    """Calls the same function on every implementation. Returns [(name, result)]."""
+    return [(name, getattr(mod, fn_name)(*args)) for name, mod in IMPLEMENTATIONS]
+
+
+def agree(fn_name, *args):
+    """(all_equal, results) across every implementation."""
+    results = every(fn_name, *args)
+    first = results[0][1]
+    return all(r == first for _, r in results), results
+
+
+def describe(results):
+    return " ".join(f"{name}={value}" for name, value in results)
 
 
 print("merge_config agrees")
@@ -55,8 +73,8 @@ cases = [
     ({"only": "base"}, {}),
 ]
 for base, over in cases:
-    a, c = both("merge_config", base, over)
-    check(f"merge {json.dumps(over)[:40]}", a == c, f"amo={a} cws={c}")
+    ok, results = agree("merge_config", base, over)
+    check(f"merge {json.dumps(over)[:40]}", ok, "" if ok else describe(results))
 
 
 print("resolve_template agrees")
@@ -68,11 +86,11 @@ template_cases = [
     ("{n}", {"n": 0}),
 ]
 for template, variables in template_cases:
-    a, c = both("resolve_template", template, variables)
-    check(f"resolve {template}", a == c, f"amo={a} cws={c}")
+    ok, results = agree("resolve_template", template, variables)
+    check(f"resolve {template}", ok, "" if ok else describe(results))
 
-print("both refuse an unresolved placeholder")
-for module, name in ((A, "amo"), (C, "cws")):
+print("all refuse an unresolved placeholder")
+for name, module in IMPLEMENTATIONS:
     try:
         module.resolve_template("{slug}-{nope}.zip", {"slug": "app"})
         check(f"{name} refuses", False, "did not exit")
@@ -99,8 +117,9 @@ with tempfile.TemporaryDirectory() as tmp:
         "amo": {"jwt_secret": "s"},
         "cws": {"refresh_token": "r"},
     }), encoding="utf-8")
-    a, c = both("load_config", str(local))
-    check("absolute extends resolves identically", a == c)
+    ok, results = agree("load_config", str(local))
+    check("absolute extends resolves identically", ok, "" if ok else "results diverged")
+    a = results[0][1]
     check("the project layer survived", a.get("locales") and a["amo"]["previewSet"] == "en-only")
     check("the local layer won where it spoke", a["publisher_id"] == "pub-1")
     check("objects merged rather than replaced",
@@ -113,11 +132,11 @@ with tempfile.TemporaryDirectory() as tmp:
     relative.write_text(json.dumps({
         "extends": "./project.config.json", "publisher_id": "pub-2",
     }), encoding="utf-8")
-    a, c = both("load_config", str(relative))
-    check("relative extends resolves identically", a == c)
-    check("and found the project file", bool(a.get("items")))
+    ok, results = agree("load_config", str(relative))
+    check("relative extends resolves identically", ok)
+    check("and found the project file", bool(results[0][1].get("items")))
 
-    print("both refuse the same broken configs")
+    print("all refuse the same broken configs")
     for label, path, needle in (
         ("a missing config file", str(tmp / "nope.json"), "not found"),
         ("invalid JSON", None, "not valid JSON"),
@@ -125,7 +144,7 @@ with tempfile.TemporaryDirectory() as tmp:
         if path is None:
             path = str(tmp / "broken.json")
             Path(path).write_text("{ not json", encoding="utf-8")
-        for module, name in ((A, "amo"), (C, "cws")):
+        for name, module in IMPLEMENTATIONS:
             try:
                 module.load_config(path)
                 check(f"{name} refuses {label}", False, "did not exit")
@@ -136,7 +155,7 @@ with tempfile.TemporaryDirectory() as tmp:
     dangling = tmp / "dangling.json"
     dangling.write_text(json.dumps({"extends": str(tmp / "gone.json")}),
                         encoding="utf-8")
-    for module, name in ((A, "amo"), (C, "cws")):
+    for name, module in IMPLEMENTATIONS:
         try:
             module.load_config(str(dangling))
             check(f"{name} refuses a dangling extends", False, "did not exit")
@@ -144,19 +163,19 @@ with tempfile.TemporaryDirectory() as tmp:
             check(f"{name} refuses a dangling extends", "does not exist" in str(exc))
 
 
-print("the shipped examples read the same through both halves")
+print("the shipped examples read the same through every half")
 for example in sorted((REPO / "examples").iterdir()):
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "config.json"
         local.write_text(json.dumps({
             "extends": str(example), "publisher_id": "pub-1",
         }), encoding="utf-8")
-        a, c = both("load_config", str(local))
-        check(f"{example.name}", a == c)
+        ok, results = agree("load_config", str(local))
+        check(f"{example.name}", ok, "" if ok else describe(results))
 
 
 print()
 if failures:
     print(f"{len(failures)} failure(s): " + ", ".join(failures))
     sys.exit(1)
-print("amo and cws agree on every config case")
+print(f"{', '.join(n for n, _ in IMPLEMENTATIONS)} agree on every config case")

@@ -9,10 +9,13 @@ It is split by **what each mechanism can actually do**, not by store:
 | | Package + release lifecycle | Listing metadata |
 |---|---|---|
 | **Chrome Web Store** | `cws/cws_publish.py` — API v2 | **`extension/`**, a Firefox add-on driving the dev console — [no API exists](#why-the-add-on-exists) |
+| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **Partner Center** — [no API exists](#why-the-add-on-exists) |
 | **addons.mozilla.org** | `amo/amo_publish.py` — API v5 | `amo/amo_publish.py` — API v5 |
 
-Three of those four boxes are real APIs. The fourth is the add-on, and it is not
-a fallback or a legacy path — it is the only way there is.
+Four of those six boxes are real APIs. Of the two that are not, both are store
+listings, and only one store of the three publishes an API for its own listing.
+The add-on is not a fallback or a legacy path — where it appears, it is the only
+way there is.
 
 Nothing here invents content. You point it at a directory of assets and it puts
 them in the right fields, in the right language, in the right order, which is the
@@ -66,6 +69,11 @@ python cws/cws_publish.py --item my-extension --upload --apply            # new 
 #   ... then the add-on fills the localized listing draft, and you Save draft ...
 python cws/cws_publish.py --item my-extension --publish --staged --apply
 python cws/cws_publish.py --item my-extension --rollout 50 --apply
+
+# Microsoft Edge — package and lifecycle
+python edge/edge_publish.py --item my-extension --upload --apply
+python edge/edge_publish.py --item my-extension --publish --apply
+python edge/edge_publish.py --item my-extension --status
 
 # addons.mozilla.org — package and listing, both by API
 python amo/amo_publish.py --item my-extension --upload-version           # dry-run
@@ -256,6 +264,17 @@ sunsets 15 October 2026. What changed in v2 is service-account auth, staged
 publishing and rollout control — all of which `cws/cws_publish.py` uses, and none
 of which touch the listing.
 
+**Microsoft says the same thing about Edge**, in the same words:
+
+> There aren't REST API endpoints for: Creating a new product. Updating a
+> product's metadata, such as the description. To create a new product or update
+> a product's metadata, you must use Microsoft Partner Center.
+
+Asked directly, the Edge team answered that the API's scope is CI/CD package
+uploads and that they were "looking into" listing metadata — in December 2024,
+with no date since. So Edge listings are filled in Partner Center, by hand or by
+a driver, exactly like the Chrome Web Store.
+
 ---
 
 ## Authentication
@@ -277,6 +296,17 @@ of which touch the listing.
 
 Both converge on a bearer token for the scope
 `https://www.googleapis.com/auth/chromewebstore`.
+
+**Microsoft Edge** — `edge.client_id` + `edge.api_key`, from Partner Center >
+Microsoft Edge > **Publish API** > *Create API credentials*. v1.1 sends them as
+two request headers with **no token exchange and nothing to sign**, which makes
+it the only one of the three with no dependency and no expiry story. (v1's
+`client_credentials` flow is not implemented: support ended 31 December 2024.)
+
+`edge.productIds` maps each item slug to its Partner Center **GUID**. An add-on
+has two identifiers and only this one works here — the id in the public store
+URL is a 32-letter string, and using it by mistake surfaces as a bare 404 on the
+first write, so the shape is checked and called out.
 
 **addons.mozilla.org** — `amo.jwt_issuer` + `amo.jwt_secret` from
 <https://addons.mozilla.org/developers/addon/api/key/>. HS256, so stdlib only.
@@ -370,7 +400,8 @@ npm test
 ```bash
 npm test                             # the add-on's pure logic (jest)
 python tests/test_cws_publish.py     # request bodies, URLs, auth-mode choice
-python tests/test_config_parity.py   # the two config loaders cannot drift apart
+python tests/test_edge_publish.py    # endpoint versioning, the Location header
+python tests/test_config_parity.py   # the config loaders cannot drift apart
 python tests/test_native_host.py     # the native host's confinement
 ```
 

@@ -28,7 +28,7 @@ jobs:
       # Stdlib-only on purpose — cryptography is needed for one auth mode and is
       # imported inside that branch, so the suites must pass without it installed.
       # That is what this job proves by never installing it.
-      - run: python -m compileall -q amo cws native tests
+      - run: python -m compileall -q amo cws edge native tests
       # Ruff is pinned: without a version, a new release's default rules can fail
       # a build nobody changed. The rule set itself lives in ruff.toml.
       - run: pip install --quiet ruff==0.16.3 && ruff check .
@@ -40,6 +40,7 @@ jobs:
       - run: python tests/test_cws_publish.py
       # The two config loaders are duplicated on purpose; this is what stops them
       # from drifting into meaning different things for the same file.
+      - run: python tests/test_edge_publish.py
       - run: python tests/test_config_parity.py
 
   manifest:
@@ -73,7 +74,8 @@ jobs:
           # Anywhere else and Firefox fails the fetch with a bare network error.
           if not Path('extension/config.example.json').is_file():
               problems.append('config.example.json must live in extension/, beside the manifest')
-          for script in ('amo/amo_publish.py', 'cws/cws_publish.py'):
+          for script in ('amo/amo_publish.py', 'cws/cws_publish.py',
+                         'edge/edge_publish.py'):
               if 'REPO_ROOT / "extension" / "config.json"' not in Path(script).read_text():
                   problems.append(f'{script} must default to the same extension/config.json')
 
