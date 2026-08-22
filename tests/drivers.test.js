@@ -78,15 +78,31 @@ describe.each(Object.entries(drivers))('%s driver', (name, driver) => {
 });
 
 describe('the Edge driver is honest about being unfinished', () => {
-  test.each(STEPS)('%s refuses instead of returning nothing', async (step) => {
+  // Split by what the Store listings dump settled. selectLanguage is written
+  // against the real aria-labels ("Edit <Language> language details page"); the
+  // rest live on a "Details for <language>" page that has not been probed, and
+  // must keep refusing until it has been.
+  const IMPLEMENTED = ['probe', 'listLanguages', 'selectLanguage'];
+  const PENDING = STEPS.filter((s) => !IMPLEMENTED.includes(s));
+
+  test('the split adds up, so neither list can silently empty out', () => {
+    expect(PENDING.length).toBeGreaterThan(0);
+    expect(PENDING).not.toContain('selectLanguage');
+  });
+
+  test.each(PENDING)('%s refuses instead of returning nothing', async (step) => {
     const result = await drivers.edge[step](1, 'x', 'y', 'z');
     expect(result).toMatchObject({ ok: false, step: 'not-implemented', store: 'edge' });
     // The refusal has to say what to do next, or a run just stops with no clue.
     expect(result.detail).toMatch(/Probe page/);
+    expect(result.detail).toMatch(/Details for/);
   });
 
-  test('but probing is wired up, since that is the point of it', () => {
-    expect(typeof drivers.edge.probe).toBe('function');
+  test.each(IMPLEMENTED)('%s is wired to the page, not stubbed', async (step) => {
+    const result = await drivers.edge[step](1, { name: 'English' });
+    // The sandbox's executeScript resolves to null, so reaching the page is what
+    // produces null here. A stub would hand back the not-implemented object.
+    expect(result).toBeNull();
   });
 
   test('its listing URL is built from the product id and is overridable', () => {

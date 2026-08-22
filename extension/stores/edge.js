@@ -149,6 +149,109 @@ function pageProbe() {
   };
 }
 
+// Reads the Store listings table: which languages have been ADDED, and what
+// state each is in.
+//
+// Confirmed against a real dump. The table's columns are Language / Status /
+// Extension name / Description / Extension logo / Action, and each row carries
+// two buttons whose aria-labels embed the language name in English:
+//
+//     "Edit English language details page"
+//     "Remove English language"
+//
+// That English name is exactly what the locale table already holds in `name` —
+// it was there for the CWS dropdown — so nothing new has to be configured.
+//
+// The distinction that matters: the package makes a language AVAILABLE, it does
+// not add it. A fresh product lists one row even with 43 locales in the zip,
+// which is the store's model and not a fault in the package.
+function pageListLanguages() {
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const label = el => (el.getAttribute('aria-label') || txt(el));
+
+  const EDIT_RE = /^Edit\s+(.+?)\s+language details page$/i;
+  const rows = [];
+  for (const el of document.querySelectorAll('button, [role="button"], a')) {
+    if (!visible(el)) continue;
+    const m = EDIT_RE.exec(label(el).trim());
+    if (!m) continue;
+    const row = el.closest('tr, [role="row"]');
+    const cells = row
+      ? Array.from(row.querySelectorAll('td, th, [role="cell"], [role="gridcell"]')).map(txt)
+      : [];
+    rows.push({ language: m[1], status: cells[1] || '', cells: cells.slice(0, 2) });
+  }
+
+  const addControl = Array.from(document.querySelectorAll(
+    'button, [role="button"], select, [role="combobox"]'))
+    .filter(visible)
+    .find(el => /add a language/i.test(label(el)));
+
+  return {
+    ok: true,
+    languages: rows,
+    canAdd: !!addControl,
+    addLabel: addControl ? label(addControl).trim() : null,
+  };
+}
+
+// Opens a language's "Details for <language>" page by clicking its row button.
+//
+// This store has no in-place language switch, so this is a NAVIGATION. It
+// verifies it actually moved before reporting success — the CWS driver refuses on
+// an unconfirmed switch rather than writing into the wrong locale, and the same
+// rule matters more here, where the wrong page is a different URL entirely.
+async function pageOpenLanguage(languageName) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const label = el => (el.getAttribute('aria-label') || txt(el)).trim();
+
+  const wanted = String(languageName).toLowerCase();
+  const EDIT_RE = /^Edit\s+(.+?)\s+language details page$/i;
+
+  const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'))
+    .filter(visible)
+    .map(el => ({ el, m: EDIT_RE.exec(label(el)) }))
+    .filter(x => x.m);
+
+  const seen = candidates.map(x => x.m[1]);
+  const target = candidates.find(x => x.m[1].toLowerCase() === wanted);
+
+  if (!target) {
+    return {
+      ok: false,
+      step: 'language-not-added',
+      wanted: languageName,
+      languagesPresent: seen,
+      // The single most confusing thing about this store, so say it here rather
+      // than let it read as "the page is broken".
+      detail: `"${languageName}" is not in the Store listings table. The package `
+        + 'makes a language available; it still has to be added from the '
+        + '"Add a language" dropdown before it has a details page.',
+    };
+  }
+
+  const before = location.href;
+  target.el.click();
+  for (let i = 0; i < 20; i++) {
+    await sleep(400);
+    if (location.href !== before) break;
+  }
+  const heading = Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]'))
+    .filter(visible).map(txt).find(t => /details for/i.test(t)) || '';
+  const confirmed = location.href !== before || /details for/i.test(heading);
+
+  return { ok: true, selected: target.m[1], confirmed, url: location.href, heading };
+}
+
 // ── driver (background context) ───────────────────────────────────────────────
 
 async function edgeExec(tabId, func, args = []) {
@@ -158,15 +261,17 @@ async function edgeExec(tabId, func, args = []) {
   return results?.[0]?.result;
 }
 
-// Every step other than the probe reports the same refusal, so a run cannot
-// half-work: the orchestration aborts on ok:false and prints the detail.
+// The steps that still need a dump of a "Details for <language>" page. Returning
+// ok:false rather than nothing is what lets the orchestration abort with a
+// message instead of walking into a code path built for a result.
 const NOT_YET = step => ({
   ok: false,
   step: 'not-implemented',
   store: 'edge',
-  detail: `The Partner Center driver cannot ${step} yet. Run "Probe page" against `
-    + 'the Store listings page and send the dump — the selectors are written '
-    + 'against that, not guessed. See the notes at the bottom of stores/edge.js.',
+  detail: `The Partner Center driver cannot ${step} yet. The Store listings page `
+    + 'is mapped; this lives on a "Details for <language>" page, which has not '
+    + 'been probed. Open one and run "Probe page" — the selectors are written '
+    + 'against that dump, not guessed. See the notes at the bottom of stores/edge.js.',
 });
 
 // Same surface as CwsDriver, documented at the bottom of stores/cws.js.
@@ -189,29 +294,52 @@ const EdgeDriver = {
 
   probe: tabId => edgeExec(tabId, pageProbe),
 
-  selectLanguage: async () => NOT_YET('open a language\'s details page'),
+  // Which languages have actually been added to the listing. Not part of the
+  // driver interface — the orchestration does not call it — but it is how a run
+  // can report "42 of your 43 are not added yet" instead of failing 42 times.
+  listLanguages: tabId => edgeExec(tabId, pageListLanguages),
+
+  // A navigation, not a dropdown pick: this store has no in-place switch.
+  // Takes the locale's English name, which the locale table already carries.
+  selectLanguage: (tabId, locale) =>
+    edgeExec(tabId, pageOpenLanguage, [locale.name]),
+
   setDescription: async () => NOT_YET('write the description'),
   countScreenshots: async () => NOT_YET('count screenshots'),
   deleteOneScreenshot: async () => NOT_YET('delete a screenshot'),
   uploadScreenshot: async () => NOT_YET('upload a screenshot'),
 };
 
-// ── Filling this in ──────────────────────────────────────────────────────────
+// ── What the first dump settled ──────────────────────────────────────────────
 //
-// 1. Probe the Store listings page. The dump's `links` gives the real route to a
-//    "Details for <language>" page, and `tables` gives the row shape and the
-//    exact label of the per-row edit button.
-// 2. Probe one Details page. `textareas` vs `editables` decides how the
-//    description is written: a plain textarea takes the CWS approach (native
-//    value setter + input/change), a contenteditable does not. `maxLength` should
-//    confirm the 10,000 cap the build already trims to.
-// 3. selectLanguage becomes a navigation, not a dropdown pick — this store has
-//    no in-place language switch. It should verify it landed on the right
-//    language before writing, the same way the CWS driver refuses on an
-//    unconfirmed switch rather than writing into the wrong locale.
-// 4. Screenshots: look for "Duplicate this screenshot for all languages" in
-//    `buttons` first. If it is there, the right shape is upload 5 once and
-//    duplicate — not 215 uploads. Note the cap is 6 and the accepted sizes are
-//    640x480 and 1280x800; ours are 1280x800.
-// 5. Never press Publish. That is edge/edge_publish.py's job, and the review
+// Probed against a real Store listings page, 2026-08-22:
+//
+// - The route is right. `/listings` works; Partner Center normalises the URL to
+//   /en-us/dashboard/... on its own, so isLoginUrl must not treat a locale
+//   segment as a login (it does not — it looks for /public/login).
+// - The table's row buttons are aria-labelled "Edit <Language> language details
+//   page" and "Remove <Language> language", with the language name in English.
+//   pageListLanguages and pageOpenLanguage are written against exactly that.
+// - textareas, editables, inputs, fileInputs and images were ALL empty on this
+//   page. Nothing to write here: every field lives behind the row button, on the
+//   "Details for <language>" page. That is why the remaining steps still refuse.
+// - "Add a language" exists as a control, and only ONE row (English) was present
+//   despite 43 locales in the package — verified inside the zip. That is the
+//   store's model, not a defect: the package makes a language AVAILABLE, adding
+//   it is a separate action. Any run over 43 locales has to add 42 of them first.
+//
+// ── What is still needed ─────────────────────────────────────────────────────
+//
+// 1. A dump of a "Details for <language>" page. `textareas` vs `editables`
+//    decides how the description is written: a plain textarea takes the CWS
+//    approach (native value setter + input/change events), a rich-text editor
+//    does not. `maxLength` there should confirm the 10,000-character cap.
+// 2. A dump with the "Add a language" control open, to learn how its options are
+//    rendered and how they name languages — that mapping is what an
+//    add-42-languages step needs, and it is the last unknown of this page.
+// 3. Screenshots: look for "Duplicate this screenshot for all languages" in the
+//    Details dump. If it is there, the right shape is upload 5 once and
+//    duplicate, not 215 uploads. The cap is 6, sizes 640x480 or 1280x800; ours
+//    are 1280x800.
+// 4. Never press Publish. That is edge/edge_publish.py's job, and the review
 //    before it stays human.
