@@ -252,8 +252,17 @@ function pageProbe() {
   // is a button as far as the operator is concerned, and an icon-only command bar
   // button carries its label in `title` or `aria-labelledby`, neither of which the
   // old `aria-label || textContent` could read.
-  const controls = everything.filter(isClickable).filter(visible)
-    .map(el => ({ el, name: accName(el) }));
+  // A component and the control inside it are the same button to a reader, and
+  // listing both doubles every dump — "Save draft" twice, "Close" twice. The host
+  // is the one kept: it carries the label, and the click path already reaches
+  // inward from there.
+  const dropShadowTwins = list => list.filter(c => {
+    const host = c.el.getRootNode() && c.el.getRootNode().host;
+    return !(host && list.some(o => o.el === host && o.name === c.name));
+  });
+
+  const controls = dropShadowTwins(everything.filter(isClickable).filter(visible)
+    .map(el => ({ el, name: accName(el) })));
 
   // No cap and no name filter: a missing control the page definitely has is the
   // worst kind of gap, and the last dump proved a filtered diagnostic can come
@@ -405,7 +414,17 @@ async function pageSaveDraft() {
   };
 
   const all = deepAll(document);
-  const controls = all.filter(clickable).filter(visible).map(el => ({ el, name: accName(el) }));
+  // A component and the control inside it are the same button to a reader, and
+  // listing both doubles every dump — "Save draft" twice, "Close" twice. The host
+  // is the one kept: it carries the label, and the click path already reaches
+  // inward from there.
+  const dropShadowTwins = list => list.filter(c => {
+    const host = c.el.getRootNode() && c.el.getRootNode().host;
+    return !(host && list.some(o => o.el === host && o.name === c.name));
+  });
+
+  const controls = dropShadowTwins(
+    all.filter(clickable).filter(visible).map(el => ({ el, name: accName(el) })));
 
   // "Save draft" first, then a bare "Save", then any control whose name contains
   // the word: the exact wording is documented, but a console that renames its own
@@ -911,24 +930,36 @@ function pageCountScreenshots() {
   };
 }
 
-// Deletes one, then waits for the count to actually drop.
+// Deletes one, confirms the dialog, then waits for the count to actually drop.
 //
-// Waiting on the count rather than on the click is what makes the caller's loop
-// safe: Partner Center removes the thumbnail asynchronously, and a loop that
-// trusted the click would delete once and then spin against a stale DOM.
+// Three things this has to get right, and the first two were got wrong once each.
+//
+// The dialog is a web component. Partner Center's shell renders one as
+// <shell_he-dialog>, which carries no role="dialog" on the host and may keep its
+// buttons in a shadow root — so a flat querySelectorAll for [role="dialog"] finds
+// nothing, the confirmation is never pressed, and the delete silently does not
+// happen. Matched by role, by the native <dialog> tag, and by a tag name ending
+// in -DIALOG, over the deep tree.
+//
+// The button inside it is a component too: the label sits on the host and the
+// handler on the real control inside, same as "Save draft".
+//
+// And waiting on the count rather than on the click is what makes the caller's
+// loop safe — Partner Center removes the thumbnail asynchronously.
 async function pageDeleteOneScreenshot() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
   const root = (() => {
     const direct = document.querySelector('screenshots');
     if (direct) return direct;
-    const deep = (r, out) => {
-      for (const el of r.querySelectorAll('*')) {
-        out.push(el);
-        if (el.shadowRoot) deep(el.shadowRoot, out);
-      }
-      return out;
-    };
-    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
+    return deepAll(document).find(el => el.tagName === 'SCREENSHOTS') || null;
   })();
   if (!root) return { ok: false, step: 'no-screenshot-slot' };
 
@@ -936,39 +967,117 @@ async function pageDeleteOneScreenshot() {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
-  const label = el => (el.getAttribute('aria-label')
+  // Slot-resolved, because a component's label is slotted in from the light DOM
+  // and textContent finds it on neither side.
+  const slotText = (node, depth) => {
+    if ((depth || 0) > 8) return '';
+    if (node.nodeType === 3) return node.nodeValue || '';
+    if (node.nodeType !== 1) return '';
+    if (node.tagName === 'SLOT') {
+      return (node.assignedNodes ? node.assignedNodes() : [])
+        .map(n => slotText(n, (depth || 0) + 1)).join(' ');
+    }
+    let out = '';
+    for (const child of node.childNodes) out += ' ' + slotText(child, (depth || 0) + 1);
+    return out;
+  };
+  const name = el => (el.getAttribute('aria-label')
     || el.getAttribute('title')
-    || (el.textContent || '').replace(/\s+/g, ' ')).trim();
-  // Scoped to the slot, so "Delete" needs no qualifier — and must not have one,
-  // since the page does not give it any.
+    || slotText(el, 0)).replace(/\s+/g, ' ').trim();
+
   const deleters = () => Array.from(root.querySelectorAll('button, [role="button"]'))
     .filter(visible)
-    .filter(el => /^delete\b/i.test(label(el)));
+    .filter(el => /^delete\b/i.test(name(el)));
 
   const before = deleters().length;
   if (!before) return { ok: true, before: 0, after: 0, nothingToDelete: true };
 
   deleters()[0].click();
-  await sleep(600);
 
-  // A confirmation dialog is document-level, not inside the slot.
-  const dlg = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'))
-    .find(visible);
-  if (dlg) {
-    const confirm = Array.from(dlg.querySelectorAll('button, [role="button"]'))
-      .filter(visible)
-      .find(b => /delete|remove|yes|confirm|ok/i.test(label(b)));
-    if (confirm) { confirm.click(); await sleep(600); }
+  // The dialog is rendered after the click, so look for it more than once.
+  const dialogs = () => deepAll(document)
+    .filter(el => ['dialog', 'alertdialog'].includes((el.getAttribute('role') || '').toLowerCase())
+      || el.tagName === 'DIALOG'
+      || /-DIALOG$/.test(el.tagName))
+    .filter(visible);
+
+  let open = [];
+  for (let i = 0; i < 10 && !open.length; i += 1) {
+    await sleep(400);
+    open = dialogs();
   }
 
-  const deadline = Date.now() + 10000;
+  const named = dlg => deepAll(dlg)
+    .filter(el => el.tagName === 'BUTTON' || el.tagName === 'A'
+      || (el.getAttribute('role') || '').toLowerCase() === 'button'
+      || (el.tagName.includes('-') && el.shadowRoot
+          && el.shadowRoot.querySelector('button, [role="button"]')))
+    .filter(visible)
+    .map(el => ({ el, name: name(el) }))
+    .filter(c => c.name);
+  // Host and inner control are one button to a reader; keep the host, which is
+  // what carries the label.
+  const controls = dlg => named(dlg).filter((c, _i, list) => {
+    const host = c.el.getRootNode() && c.el.getRootNode().host;
+    return !(host && list.some(o => o.el === host && o.name === c.name));
+  });
+
+  let confirmed = null;
+  for (const dlg of open) {
+    // Affirmative only. "Cancel", "Close" and "No" are the ones that would leave
+    // the screenshot in place while the run believed it had gone.
+    const hit = controls(dlg)
+      .filter(c => !/cancel|close|\bno\b|dismiss/i.test(c.name))
+      .find(c => /^(delete|remove|yes|confirm|ok)\b/i.test(c.name));
+    if (hit) {
+      const inner = hit.el.shadowRoot
+        && hit.el.shadowRoot.querySelector('button, [role="button"]');
+      (inner || hit.el).click();
+      confirmed = hit.name;
+      break;
+    }
+  }
+
+  if (open.length && !confirmed) {
+    // Report what the dialog offered rather than timing out against a page that
+    // is waiting for an answer. Unfiltered, because the previous version of this
+    // step returned {ok:false, before:1, after:1} and said nothing at all.
+    return {
+      ok: false,
+      step: 'no-confirm-control',
+      before,
+      after: deleters().length,
+      dialogs: open.map(d => ({ tag: d.tagName, role: d.getAttribute('role'),
+                                buttons: controls(d).map(c => c.name) })),
+      detail: 'A confirmation dialog opened and nothing in it read as an '
+        + 'affirmative. The screenshot is still there and the dialog is still '
+        + 'open. "dialogs" lists every control it offers.',
+    };
+  }
+
   let after = before;
-  while (Date.now() < deadline) {
+  for (let i = 0; i < 20 && after >= before; i += 1) {
     await sleep(500);
     after = deleters().length;
-    if (after < before) break;
   }
-  return { ok: after < before, before, after };
+
+  if (after >= before) {
+    return {
+      ok: false,
+      step: 'delete-did-not-take',
+      before,
+      after,
+      sawDialog: open.length > 0,
+      confirmed,
+      detail: open.length
+        ? `Pressed "${confirmed}" in the confirmation dialog, but the thumbnail is `
+          + 'still there.'
+        : 'No confirmation dialog appeared after clicking Delete, and the '
+          + 'thumbnail is still there. Partner Center does ask for confirmation, '
+          + 'so the dialog is probably rendered as something this did not match.',
+    };
+  }
+  return { ok: true, before, after, confirmed };
 }
 
 // Puts one PNG into the screenshot slot's file input.
@@ -1300,6 +1409,16 @@ const EdgeDriver = {
 //   assumption in this driver, never observed. Inside the right component a plain
 //   "Delete" is unambiguous, which is the whole argument for scoping by component
 //   rather than by label text.
+// - **Deleting asks for confirmation**, and the dialog is a component too:
+//   <shell_he-dialog>, no role="dialog" on the host, buttons that are themselves
+//   components. A flat query for [role="dialog"] finds nothing and the delete
+//   silently does not happen. Never press Cancel or Close there: the screenshot
+//   stays while the run believes it is gone, and the next upload then overflows
+//   the cap of six.
+// - **A component and the control inside it are one button.** Matching both made
+//   every dump list each control twice ("Save draft", "Save draft"), which is
+//   noise in a dump that has to be pasted by hand. The host is the one kept — it
+//   carries the label, and the click path reaches inward from there.
 // - Thumbnail alts carry the filename: "Extension Store logo icon128.png",
 //   "Promotile promo-440x280.png". countScreenshots reads the same shape.
 // - The duplicate buttons are per slot: "Duplicate this logo for all languages",
