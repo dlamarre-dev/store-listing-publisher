@@ -32,8 +32,10 @@ const SCRIPTS = ['lib/locales.js', 'stores/cws.js', 'stores/edge.js'];
 // alone, or null for a page that takes nothing. `delay` is how many count polls
 // pass before the accepted attempt shows up.
 function load({ honours = 1, delay = 0, count = 0, applyResult = null,
-                latency = 0, duplicate = false } = {}) {
-  const state = { count, applied: [], polls: 0, pending: null, latency, fills: 0 };
+                latency = 0, duplicate = false, readyAfter = 0,
+                slotState = true } = {}) {
+  const state = { count, applied: [], polls: 0, pending: null, latency, fills: 0,
+                  slotChecks: 0 };
 
   const sandbox = {
     console,
@@ -64,6 +66,13 @@ function load({ honours = 1, delay = 0, count = 0, applyResult = null,
               state.pending = null;
             }
             return [{ result: { ok: true, count: state.count, scope: 'localized' } }];
+          }
+          if (func.name === 'pageSlotState') {
+            state.slotChecks += 1;
+            if (!slotState) return [{ result: null }];
+            return [{ result: { ok: true, count: state.count,
+                                committed: state.count,
+                                ready: state.slotChecks > readyAfter } }];
           }
           if (func.name === 'pageApplyUpload') {
             const mechanism = args[2];
@@ -230,5 +239,74 @@ describe('the probe before the second fill', () => {
     state.fills = 0;
     await driver.uploadScreenshot(1, B64, 'p2.png');
     expect(state.latency).toBe(5 * 500);
+  });
+});
+
+// ── the gap between two uploads ──────────────────────────────────────────────
+//
+// Read together, three runs said the same thing: an upload into a slot that
+// already holds an image lands about half a minute after the previous one and not
+// before, whichever gesture is used. Every earlier design was paying that gap by
+// accident, inside verification windows it thought it was spending on gestures —
+// which is why shortening the probe to three seconds broke a run that had worked.
+//
+// So it is waited out deliberately. Two parts, and they are different in kind: the
+// readiness check is a hypothesis about WHAT the wait is for, and the gap is the
+// only thing that was actually measured.
+describe('the wait before adding to a slot', () => {
+  test('is skipped entirely when the slot is empty', async () => {
+    const { res, state } = await upload({ honours: 1, count: 0 });
+    expect(res.settleMs).toBe(0);
+    expect(state.slotChecks).toBe(0);
+  });
+
+  test('waits for every thumbnail to carry its own controls', async () => {
+    const { res } = await upload({ honours: 2, count: 1, readyAfter: 3 });
+    // Three polls of half a second before the slot reported itself committed.
+    expect(res.settleMs).toBeGreaterThanOrEqual(3 * 500);
+  });
+
+  // The part with evidence behind it. The gap is owed only against an upload THIS
+  // run made: an image that was already in the slot could be minutes old, and
+  // waiting half a minute for it would be waiting for nothing.
+  const second = async (opts) => {
+    const { driver, state } = load({ honours: 1, ...opts });
+    await driver.uploadScreenshot(1, B64, 'p1.png');
+    state.pending = null;
+    state.fills = 0;
+    const res = await driver.uploadScreenshot(1, B64, 'p2.png');
+    return { res, state };
+  };
+
+  test('is not owed to an image that was already there', async () => {
+    const { res } = await upload({ honours: 2, count: 1 });
+    expect(res.settleMs).toBeLessThan(1000);
+  });
+
+  test('but is owed after an upload of our own', async () => {
+    const { res } = await second({});
+    expect(res.settleMs).toBeGreaterThanOrEqual(29000);
+    expect(res.settleMs).toBeLessThan(31000);
+  });
+
+  // A page that cannot answer the readiness question must not skip the gap: the
+  // gap is the part the runs measured, and the observable is the guess.
+  test('a slot that cannot be read still waits out the gap', async () => {
+    const { res, state } = await second({ slotState: false });
+    expect(state.slotChecks).toBe(1);
+    expect(res.settleMs).toBeGreaterThanOrEqual(29000);
+  });
+
+  test('the gap is reported, so it can be lowered against evidence', async () => {
+    const { res } = await upload({ honours: 2, count: 1 });
+    expect(typeof res.settleMs).toBe('number');
+  });
+
+  // A failure carries both — the two things needed to tell "the gap was too
+  // short" from "the page never takes this file".
+  test('and a failure reports it alongside the slot state', async () => {
+    const { res } = await upload({ honours: null, count: 1 });
+    expect(typeof res.settleMs).toBe('number');
+    expect(res.slot).toMatchObject({ ok: true });
   });
 });

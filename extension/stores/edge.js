@@ -892,6 +892,66 @@ function pageSetDescription(text, apply) {
 // The root lookup is repeated inside each function rather than shared: these are
 // serialized by executeScript one at a time, so a helper in this file would not
 // travel with them.
+// Whether the slot has finished with what is already in it.
+//
+// Three runs said the same thing once they were read together: every accepted
+// upload happened after roughly half a minute had passed since the previous one,
+// and the "winning" gesture was simply whichever one was being attempted when the
+// wait ran out. Shortening the probe to three seconds removed the delay that had
+// been making everything else look like it worked.
+//
+// So the thing to wait for is the slot, not another gesture — and waiting for an
+// observable beats waiting for a number. A committed screenshot carries its own
+// per-image controls, "Delete screenshot <file>" among them, which is how a
+// thumbnail that is merely being previewed is told from one the console has
+// accepted. Ready means every thumbnail has them.
+function pageSlotState() {
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const root = document.querySelector('screenshots')
+    || deepAll(document).find(el => el.tagName === 'SCREENSHOTS') || null;
+  if (!root) return { ok: false, step: 'no-screenshot-slot' };
+
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const label = el => (el.getAttribute('aria-label')
+    || el.getAttribute('title')
+    || (el.textContent || '').replace(/\s+/g, ' ')).trim();
+
+  const shots = deepAll(root).filter(el => el.tagName === 'IMG')
+    .filter(visible).filter(i => i.clientWidth >= 40);
+  // "Delete screenshot Promo_1_fr.png" — the name is in the control, so a
+  // thumbnail is matched to its own controls rather than to a count of them.
+  const deletable = new Set(deepAll(root)
+    .filter(el => el.tagName === 'BUTTON' || el.tagName === 'A'
+      || (el.getAttribute('role') || '').toLowerCase() === 'button')
+    .filter(visible)
+    .map(label)
+    .map(t => /^delete\s+screenshot\s+(.+)$/i.exec(t))
+    .filter(Boolean)
+    .map(m => m[1].trim()));
+
+  const names = shots.map(i => (i.alt || '').replace(/^screenshot\s+/i, '').trim());
+  const committed = names.filter(n => n && deletable.has(n)).length;
+
+  return {
+    ok: true,
+    count: shots.length,
+    committed,
+    ready: committed === shots.length,
+    names,
+    deletable: Array.from(deletable),
+  };
+}
+
 function pageCountScreenshots() {
   const root = (() => {
     const direct = document.querySelector('screenshots');
@@ -1396,6 +1456,22 @@ const POLL_MS = 500;
 const LONG_WINDOW_MS = 30000;
 const PROBE_MIN_MS = 3000;
 const PROBE_MAX_MS = 10000;
+const SETTLE_MAX_MS = 45000;
+
+// The shortest gap this console has ever been seen to accept between two uploads
+// into the same slot.
+//
+// This is the knob. Three runs agreed that an upload lands about half a minute
+// after the previous one and not before, whichever gesture is used, so the gap is
+// waited out deliberately instead of being paid for by accident inside a
+// verification window. Correct and slow beats fast and wrong: at five screenshots
+// a locale it costs about two minutes each, and a run that completes is worth more
+// than one that fails on the second file.
+//
+// Lower it only against a run that shows uploads accepted sooner — the log prints
+// the gap it waited, so that evidence is there to collect.
+const MIN_UPLOAD_GAP_MS = 30000;
+let lastUploadAt = 0;
 let learnedLatency = null;
 
 async function loadLatency() {
@@ -1590,6 +1666,42 @@ const EdgeDriver = {
       return 0;
     };
 
+    // Wait for the slot to finish with what is already in it before adding to it.
+    //
+    // This is the delay the earlier designs were paying for by accident: every
+    // accepted upload came after roughly half a minute since the previous one, and
+    // the gesture that happened to be current took the credit. Waiting on an
+    // observable — every thumbnail carrying its own per-image controls — costs
+    // nothing when the slot is already idle, which is the case on the first
+    // upload of a locale.
+    let settleMs = 0;
+    if (before) {
+      // First the observable: every thumbnail carrying its own per-image
+      // controls, which is how one the console has committed is told from one it
+      // is merely previewing.
+      const settlePolls = Math.ceil(SETTLE_MAX_MS / POLL_MS);
+      for (let i = 1; i <= settlePolls; i += 1) {
+        const state = await edgeExec(tabId, pageSlotState);
+        if (!state || state.ok !== true) break;
+        if (state.ready) break;
+        await edgeSleep(POLL_MS);
+        settleMs = i * POLL_MS;
+      }
+
+      // Then the gap, which is the part the evidence is actually about. The
+      // readiness check above is a hypothesis about WHAT the wait is for; the gap
+      // is the only thing three runs measured. Whatever the readiness check
+      // already spent counts towards it, and so does everything else that
+      // happened since — the previous upload's own verification, the count polls,
+      // a description write.
+      const elapsed = lastUploadAt ? Date.now() - lastUploadAt : MIN_UPLOAD_GAP_MS;
+      const owed = MIN_UPLOAD_GAP_MS - elapsed;
+      if (owed > 0) {
+        await edgeSleep(owed);
+        settleMs += owed;
+      }
+    }
+
     const probeMs = await probeWindowMs();
     const order = [...FILL_GESTURES, DROP_GESTURE];
 
@@ -1618,6 +1730,7 @@ const EdgeDriver = {
       // the next upload would fail for a reason that has nothing to do with it.
       // Better to stop here, where it is attributable.
       if (after !== null && before !== null && after > before + 1) {
+        lastUploadAt = Date.now();
         return {
           ok: false,
           step: 'upload-duplicated',
@@ -1628,8 +1741,9 @@ const EdgeDriver = {
         };
       }
       if (isFirstFill) await rememberLatency(tookMs);
+      lastUploadAt = Date.now();
       return { ok: true, filename, via: mechanism, before, after, tried,
-               chose: applied.chose, tookMs };
+               chose: applied.chose, tookMs, settleMs };
     }
 
     return {
@@ -1639,6 +1753,8 @@ const EdgeDriver = {
       before,
       after: await shots(),
       tried,
+      settleMs,
+      slot: await edgeExec(tabId, pageSlotState),
       detail: 'The file was put into the slot twice and dropped on it once, and '
         + 'the page took none of them. Each attempt was verified against the '
         + 'thumbnail count before the next: the first fill against a short probe, '
@@ -1705,6 +1821,16 @@ const EdgeDriver = {
 //   The probe is what keeps this from uploading twice — this slot appends rather
 //   than replaces, so a second fill made while the first was merely slow would
 //   append a duplicate, and the cap is six against the five we send.
+//   **But the operative variable is time, not the gesture.** Read together, three
+//   runs agreed: an upload into a slot that already holds an image lands about
+//   half a minute after the previous one and not before, whichever gesture is
+//   used, and every design before this one was paying that gap by accident inside
+//   windows it thought it was spending on gestures. Shortening the probe to three
+//   seconds removed the delay that had been making the rest look like it worked,
+//   and the second screenshot of the first locale failed. So the gap is waited out
+//   deliberately — MIN_UPLOAD_GAP_MS, owed only against an upload this run made,
+//   and reported in the log so it can be lowered against evidence rather than
+//   guessed downward again.
 //   One number matters and it is easy to get wrong: the probe must be sized from
 //   FIRST-fill successes only. A success that needed two fills is slower by
 //   construction, and sizing the probe from it makes every later upload wait out
