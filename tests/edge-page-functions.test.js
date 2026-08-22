@@ -34,7 +34,7 @@ const SCRIPTS = ['lib/locales.js', 'stores/cws.js', 'stores/edge.js'];
 // jsdom has no layout, so getClientRects() is always empty and the driver's
 // visibility test would reject the whole page. Anything not explicitly marked
 // counts as on screen here; visibility itself is not what these tests are about.
-function loadPageFns(html) {
+function loadPageFns(html, onTick) {
   document.body.innerHTML = html;
   Element.prototype.getClientRects = function getClientRects() {
     return this.hasAttribute('data-offscreen') ? [] : [{ width: 10, height: 10 }];
@@ -46,7 +46,10 @@ function loadPageFns(html) {
     getComputedStyle: (el) => window.getComputedStyle(el),
     location: { href: 'https://partner.microsoft.com/dashboard' },
     Node,
-    setTimeout: (fn) => { fn(); return 0; },
+    // Fires immediately: the page functions poll with real sleeps, and a faithful
+    // clock would make this suite sit through every one of them. onTick lets a
+    // test stand in for a page that finishes rendering after a few polls.
+    setTimeout: (fn) => { if (onTick) onTick(); fn(); return 0; },
     console,
     // Host objects the vm realm does not carry. jsdom has no working
     // DataTransfer, so it gets the smallest one that behaves: a list a File goes
@@ -66,7 +69,8 @@ function loadPageFns(html) {
   const sources = SCRIPTS.map(
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
   sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
-    + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots };');
+    + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
+    + ' pageListLanguages };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -453,5 +457,105 @@ describe('the screenshot slot', () => {
     const out = pageUploadScreenshot('AAA=', 'x.png');
     expect(out.fileInputs).toHaveLength(1);
     expect(out.fileInputs[0].chain).toMatch(/SECTION/);
+  });
+});
+
+// ── reading the language table ───────────────────────────────────────────────
+//
+// Partner Center renders this table after the page reports complete, so reading
+// it once can catch it empty — and an empty table is indistinguishable from a
+// listing with no languages. Enrolment reads this to decide what is missing, so
+// an early read reports every language missing and the run tries to add one that
+// is already there. That is what happened twice on a real run: the add-on
+// reloaded the listings page and concluded French did not exist.
+describe('the language table', () => {
+  const ROW = (lang) => `<table><tr><td>${lang}</td><td>Complete</td>
+    <td><button aria-label="Edit ${lang} language details page"></button></td></tr></table>`;
+  const ADD = '<button>Add a language</button>';
+
+  test('is read when it is there', async () => {
+    const { pageListLanguages } = loadPageFns(ROW('French') + ADD);
+    const out = await pageListLanguages();
+    expect(out).toMatchObject({ ok: true, canAdd: true });
+    expect(out.languages.map((l) => l.language)).toEqual(['French']);
+  });
+
+  // The bug: neither rows nor the control, because nothing had rendered yet.
+  test('refuses to call an unrendered page an empty listing', async () => {
+    const { pageListLanguages } = loadPageFns('<div>loading</div>');
+    expect(await pageListLanguages())
+      .toMatchObject({ ok: false, step: 'listing-not-rendered' });
+  });
+
+  // A brand-new listing really can have no languages. The control is what says
+  // the view rendered, so this stays a success.
+  test('but a rendered page with no rows is genuinely empty', async () => {
+    const { pageListLanguages } = loadPageFns(ADD);
+    expect(await pageListLanguages()).toMatchObject({ ok: true, languages: [] });
+  });
+
+  test('and it waits for rows that arrive late', async () => {
+    let ticks = 0;
+    const { pageListLanguages } = loadPageFns('<div>loading</div>', () => {
+      ticks += 1;
+      if (ticks === 3) document.body.innerHTML = ROW('English') + ROW('French') + ADD;
+    });
+    const out = await pageListLanguages();
+    expect(out.languages.map((l) => l.language)).toEqual(['English', 'French']);
+  });
+});
+
+// ── adding a second screenshot ───────────────────────────────────────────────
+//
+// A slot with images in it carries one uploader per image — the "replace this
+// one" affordance — plus the empty "Add Image" uploader at the end. Taking the
+// first replaces image 1 instead of adding image 2, which is what a real run did:
+// the second upload reported success, the count stayed at 1, and the run timed
+// out waiting for 2.
+describe('uploading into a slot that already has images', () => {
+  const slotWith = (n) => {
+    const filled = Array.from({ length: n }, (_, i) => `
+      <div class="asset"><img alt="Screenshot shot${i}.png" src="x.png">
+        <form><input type="file" class="replace" accept=".png"></form>
+      </div>`).join('');
+    document.body.innerHTML = `<screenshots>${filled}
+      <div class="add"><span>Add Image</span>
+        <form><input type="file" class="adder" accept=".png"></form>
+      </div></screenshots>`;
+    document.querySelectorAll('input[type="file"]').forEach((inp) => {
+      Object.defineProperty(inp, 'files', { value: null, writable: true, configurable: true });
+    });
+  };
+  const b64 = Buffer.from('PNGDATA').toString('base64');
+
+  test('fills the Add Image uploader, not the first one it finds', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    slotWith(1);
+    expect(pageUploadScreenshot(b64, 'Promo_2_fr.png'))
+      .toMatchObject({ ok: true, inputs: 2, chose: 'add-image' });
+    expect(document.querySelector('.replace').files).toBeNull();
+    expect(document.querySelector('.adder').files[0].name).toBe('Promo_2_fr.png');
+  });
+
+  test('and still works when four are already up', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    slotWith(4);
+    expect(pageUploadScreenshot(b64, 'Promo_5_fr.png')).toMatchObject({ inputs: 5 });
+    expect(document.querySelector('.adder').files[0].name).toBe('Promo_5_fr.png');
+    document.querySelectorAll('.replace').forEach((i) => expect(i.files).toBeNull());
+  });
+
+  // Without the caption, position decides — the add uploader comes after the
+  // replacements. Guessing the first would be wrong in both readings.
+  test('falls back to the last uploader when nothing is captioned', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    document.body.innerHTML = `<screenshots>
+      <form><input type="file" class="replace" accept=".png"></form>
+      <form><input type="file" class="adder" accept=".png"></form></screenshots>`;
+    document.querySelectorAll('input[type="file"]').forEach((inp) => {
+      Object.defineProperty(inp, 'files', { value: null, writable: true, configurable: true });
+    });
+    expect(pageUploadScreenshot(b64, 'x.png')).toMatchObject({ chose: 'last' });
+    expect(document.querySelector('.adder').files[0].name).toBe('x.png');
   });
 });

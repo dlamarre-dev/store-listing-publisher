@@ -609,7 +609,8 @@ async function pageProbeAddLanguage() {
 // The distinction that matters: the package makes a language AVAILABLE, it does
 // not add it. A fresh product lists one row even with 43 locales in the zip,
 // which is the store's model and not a fault in the package.
-function pageListLanguages() {
+async function pageListLanguages() {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -618,28 +619,59 @@ function pageListLanguages() {
   const label = el => (el.getAttribute('aria-label') || txt(el));
 
   const EDIT_RE = /^Edit\s+(.+?)\s+language details page$/i;
-  const rows = [];
-  for (const el of document.querySelectorAll('button, [role="button"], a')) {
-    if (!visible(el)) continue;
-    const m = EDIT_RE.exec(label(el).trim());
-    if (!m) continue;
-    const row = el.closest('tr, [role="row"]');
-    const cells = row
-      ? Array.from(row.querySelectorAll('td, th, [role="cell"], [role="gridcell"]')).map(txt)
-      : [];
-    rows.push({ language: m[1], status: cells[1] || '', cells: cells.slice(0, 2) });
+  const read = () => {
+    const rows = [];
+    for (const el of document.querySelectorAll('button, [role="button"], a')) {
+      if (!visible(el)) continue;
+      const m = EDIT_RE.exec(label(el).trim());
+      if (!m) continue;
+      const row = el.closest('tr, [role="row"]');
+      const cells = row
+        ? Array.from(row.querySelectorAll('td, th, [role="cell"], [role="gridcell"]')).map(txt)
+        : [];
+      rows.push({ language: m[1], status: cells[1] || '', cells: cells.slice(0, 2) });
+    }
+    const addControl = Array.from(document.querySelectorAll(
+      'button, [role="button"], select, [role="combobox"]'))
+      .filter(visible)
+      .find(el => /add a language/i.test(label(el)));
+    return { rows, addControl };
+  };
+
+  // Partner Center renders this table after the page reports complete, so reading
+  // once can catch it empty — and an empty table is indistinguishable from a
+  // listing with no languages. That is not a cosmetic difference: enrolment reads
+  // this to decide what is missing, so an early read reports every language
+  // missing and the run tries to add one that is already there.
+  //
+  // Polled by attempts rather than by wall clock, so the wait is bounded without
+  // a timer the tests have to sit through.
+  let state = read();
+  for (let i = 0; i < 40 && !state.rows.length; i += 1) {
+    await sleep(500);
+    state = read();
   }
 
-  const addControl = Array.from(document.querySelectorAll(
-    'button, [role="button"], select, [role="combobox"]'))
-    .filter(visible)
-    .find(el => /add a language/i.test(label(el)));
+  // Still nothing after the wait. If the "Add a language" control is there, the
+  // view did render and this listing genuinely has no languages yet. If it is not,
+  // nothing rendered — and saying so beats reporting an empty listing that would
+  // send the caller off adding 43 languages to a page it never read.
+  if (!state.rows.length && !state.addControl) {
+    return {
+      ok: false,
+      step: 'listing-not-rendered',
+      detail: 'The Store listings page showed neither a language row nor the "Add '
+        + 'a language" control after waiting. It was probably read before it '
+        + 'finished rendering; reporting an empty listing here would make the run '
+        + 'add languages that already exist.',
+    };
+  }
 
   return {
     ok: true,
-    languages: rows,
-    canAdd: !!addControl,
-    addLabel: addControl ? label(addControl).trim() : null,
+    languages: state.rows,
+    canAdd: !!state.addControl,
+    addLabel: state.addControl ? label(state.addControl).trim() : null,
   };
 }
 
@@ -980,12 +1012,40 @@ function pageUploadScreenshot(b64, filename) {
     };
   }
 
-  const input = root.querySelector('input[type="file"]');
-  if (!input) {
+  // Which input, of possibly several.
+  //
+  // A slot with images in it carries one uploader PER IMAGE — that is the
+  // "replace this one" affordance — plus the empty "Add Image" uploader at the
+  // end. Taking the first therefore replaces image 1 instead of adding image 2,
+  // which is exactly what happened: the second upload reported success and the
+  // count stayed at 1 until the run timed out waiting for 2.
+  //
+  // It also corrects a note this driver made from the first dump. The logo slot
+  // was full and still exposed an input; the conclusion drawn then — that a
+  // filled slot exposes none — had the fact backwards.
+  const inputs = Array.from(root.querySelectorAll('input[type="file"]'));
+  if (!inputs.length) {
     return { ok: false, step: 'no-screenshot-file-input',
-             detail: 'The <screenshots> element has no file input. It may already '
-               + 'hold the maximum of six images.' };
+             detail: 'The <screenshots> element has no file input at all. It may '
+               + 'already hold the maximum of six images.' };
   }
+  // Stops at the slot itself. Climbing past it reaches <screenshots>, whose text
+  // contains every caption in the slot — including "Add Image" — so every input
+  // would look like the add one, replacements included.
+  const nearestLabel = el => {
+    let p = el.parentElement;
+    for (let i = 0; i < 6 && p && p !== root; i += 1) {
+      const t = (p.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length < 120) return t;
+      p = p.parentElement;
+    }
+    return '';
+  };
+  // By its caption first — the probe found the empty uploader labelled "Add
+  // Image" — and by position otherwise, the add uploader being the one after all
+  // the replacements.
+  const byLabel = inputs.find(i => /add\s*image/i.test(nearestLabel(i)));
+  const input = byLabel || inputs[inputs.length - 1];
 
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const file = new File([bytes], filename, { type: 'image/png' });
@@ -994,7 +1054,15 @@ function pageUploadScreenshot(b64, filename) {
   input.files = dt.files;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-  return { ok: true, filename, size: bytes.length };
+  // Which one was filled, and out of how many: when an upload reports success and
+  // the count does not move, this is the line that says why.
+  return {
+    ok: true,
+    filename,
+    size: bytes.length,
+    inputs: inputs.length,
+    chose: byLabel ? 'add-image' : 'last',
+  };
 }
 
 // Copies this language's screenshots to every other language.
@@ -1160,7 +1228,13 @@ const EdgeDriver = {
   deleteOneScreenshot: tabId => edgeExec(tabId, pageDeleteOneScreenshot),
 
   // Copies one language's screenshots to all the others — the store's own
-  // feature, and the reason uploading per language is mostly unnecessary here.
+  // feature.
+  //
+  // **Nothing calls this.** It is offered, not used: the orchestration uploads
+  // each locale's own screenshots, and duplicating would overwrite 42 languages
+  // with one language's images. It is only ever right from the default locale,
+  // and only for a project whose screenshots carry no text — which is not this
+  // one. A caller that wires it up should check both.
   duplicateScreenshots: tabId => edgeExec(tabId, pageDuplicateScreenshots),
 
   // Puts one PNG into the screenshot slot. It refused until a probe of a real
@@ -1213,9 +1287,15 @@ const EdgeDriver = {
 //       INPUT.fileuploader < FORM < SCREENSHOTS < FORM.spacer-xl-bottom < …
 //       INPUT.fileuploader < FORM < DIV.row.form-group-tall < … < SECTION.section
 //
-//   A slot that already holds an image exposes no input, which is why an earlier
-//   dump counted two and concluded there were only two. Every screenshot step is
-//   scoped to <screenshots> for this reason, and refuses when it is absent.
+//   Every screenshot step is scoped to <screenshots> for this reason, and refuses
+//   when it is absent.
+// - **A slot carries one uploader per image, plus one to add with.** The logo slot
+//   was full in that dump and still exposed an input — the replace affordance —
+//   so the conclusion drawn at the time, that a filled slot exposes none, had the
+//   fact backwards. It cost a run: taking the first input in the slot replaced
+//   screenshot 1 with screenshot 2, the count stayed at 1, and the upload loop
+//   timed out waiting for it to reach 2. The one to fill is the one captioned
+//   "Add Image", or failing that the last.
 // - The delete buttons read "Delete", not "Delete screenshot <file>" — an earlier
 //   assumption in this driver, never observed. Inside the right component a plain
 //   "Delete" is unambiguous, which is the whole argument for scoping by component
@@ -1233,8 +1313,12 @@ const EdgeDriver = {
 // 1. Never press Publish. That is edge/edge_publish.py's job, and the review
 //    before it stays human.
 // 2. The screenshot cap is 6; sizes 640x480 or 1280x800, ours are 1280x800.
-//    Duplicating from one language beats 215 uploads and is the store's own
-//    feature — prefer it.
-// 3. When the console changes, probe first. Three separate controls have now been
+// 3. **Do not duplicate one language's screenshots across the others.** The store
+//    offers it and this driver exposes it, but nothing calls it: each locale has
+//    its own localized screenshots, and duplicating would overwrite 42 languages
+//    with one language's images. A language with no page of its own already falls
+//    back to the default one on the store side, which is the behaviour wanted —
+//    so there is nothing to gain and a whole listing to lose.
+// 4. When the console changes, probe first. Three separate controls have now been
 //    missed by a selector narrower than the page, and each time the dump found
 //    them once it stopped filtering itself.
