@@ -303,39 +303,84 @@ async function pageSaveDraft() {
   const all = deepAll(document);
   const controls = all.filter(clickable).filter(visible).map(el => ({ el, name: accName(el) }));
 
-  // "Save draft" first, then a bare "Save": the exact wording is documented, but a
-  // console that renames its own button is likelier than one that stops saving.
+  // "Save draft" first, then a bare "Save", then any control whose name contains
+  // the word: the exact wording is documented, but a console that renames its own
+  // button is likelier than one that stops saving, and "Save as draft" or "Save
+  // and continue" would both slip past the first two patterns.
+  //
+  // The last pass excludes publish and submit. A save that also submits is not a
+  // save for our purposes: sending a listing for certification is
+  // edge/edge_publish.py's job, and the human review before it is the point.
   const hit = controls.find(c => /save\s*draft/i.test(c.name))
-    || controls.find(c => /^save$/i.test(c.name));
+    || controls.find(c => /^save$/i.test(c.name))
+    || controls.find(c => /\bsave\b/i.test(c.name) && !/publish|submit/i.test(c.name));
 
   if (!hit) {
-    // Report before filtering. The previous version filtered its own diagnostic
-    // on the same words that had already failed to match, so an empty list could
-    // not be told apart from a list of things that simply are not Save — and the
-    // empty one is what came back. Everything named is listed, and the counts say
-    // whether the gap is "nothing here" or "here but unnamed".
-    const named = controls.filter(c => c.name);
+    // Report before filtering, and report the whole page.
+    //
+    // The round before this one filtered its own diagnostic on the words the
+    // search had just failed on, so it came back empty exactly when it mattered.
+    // This round listed only the *named* controls — and the page turned out to
+    // have 19 nameless ones, which is precisely where a save button could still
+    // be hiding. So: every control, named or not, on one line each, because 82
+    // objects do not survive being pasted into a chat.
+    const cls = el => (typeof el.className === 'string' ? el.className : '')
+      .trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    const at = el => {
+      const r = el.getBoundingClientRect();
+      return `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`;
+    };
+    const describe = c => [
+      c.el.tagName,
+      c.el.getAttribute('role') ? `[${c.el.getAttribute('role')}]` : '',
+      cls(c.el) ? `.${cls(c.el)}` : '',
+      ` @${at(c.el)}`,
+      c.el.disabled || c.el.getAttribute('aria-disabled') === 'true' ? ' (off)' : '',
+      ` :: ${c.name ? c.name.slice(0, 50) : '(no name)'}`,
+    ].join('');
+
+    // And the question that decides what to do next: do the words exist at all?
+    //
+    // If "Save draft" is written anywhere in this DOM, the leaf holding it is
+    // found here and the chain up to the nearest clickable ancestor — marked
+    // with * — is the selector to write. If the words appear nowhere, then this
+    // page genuinely has no save of its own, and the fix is a different one
+    // entirely: the commit is somewhere else, not behind a better selector.
+    const chain = el => {
+      const out = [];
+      let p = el;
+      for (let i = 0; i < 7 && p; i += 1) {
+        out.push(p.tagName + (cls(p) ? `.${cls(p)}` : '') + (clickable(p) ? '*' : ''));
+        p = p.parentElement || (p.getRootNode() && p.getRootNode().host) || null;
+      }
+      return out.join(' < ');
+    };
+    const wordHits = all
+      .filter(el => !el.querySelector('*'))
+      .map(el => ({ el, t: txt(el) }))
+      .filter(h => h.t && h.t.length < 40 && /save|draft|submit|apply|discard/i.test(h.t))
+      .slice(0, 15)
+      .map(h => ({ text: h.t, visible: visible(h.el), chain: chain(h.el) }));
+
     return {
       ok: false,
       step: 'no-save-control',
       scanned: all.length,
       shadowRoots: all.filter(el => el.shadowRoot).length,
       clickable: controls.length,
-      unnamed: controls.length - named.length,
+      unnamed: controls.filter(c => !c.name).length,
       // Same-origin frames are reported rather than searched: executeScript runs
       // in the top frame only, so a control inside one is unreachable from here
       // and that is a different fix, not a wider selector.
       frames: Array.from(document.querySelectorAll('iframe, frame'))
         .map(f => ({ src: f.getAttribute('src'), name: f.getAttribute('name') })),
-      candidates: named.slice(0, 120).map(c => ({
-        tag: c.el.tagName,
-        role: c.el.getAttribute('role'),
-        name: c.name.slice(0, 60),
-        disabled: !!(c.el.disabled || c.el.getAttribute('aria-disabled') === 'true'),
-      })),
+      saveWords: wordHits,
+      candidates: controls.map(describe),
       detail: 'No "Save draft" control found on this page. Leaving a details page '
         + 'without saving discards the description, so nothing was written. '
-        + '"candidates" is every named clickable on the page, unfiltered.',
+        + '"candidates" is every clickable on the page including the nameless '
+        + 'ones; "saveWords" is every leaf whose text says save/draft/submit, '
+        + 'with * marking a clickable ancestor.',
     };
   }
 

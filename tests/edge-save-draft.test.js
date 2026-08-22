@@ -89,6 +89,34 @@ describe('the name a control is found by', () => {
   });
 });
 
+describe('the wording it will accept', () => {
+  const finds = async (html) => {
+    const { pageSaveDraft } = loadPageFns(html);
+    return pageSaveDraft();
+  };
+
+  test.each(['Save draft', 'Save', 'Save as draft', 'Save and continue'])(
+    'accepts "%s"', async (label) => {
+      expect(await finds(`<button title="${label}"></button>`))
+        .toMatchObject({ ok: true, step: 'saved', label });
+    });
+
+  // A save that also submits is not a save for our purposes: sending a listing
+  // for certification is edge_publish.py's job, and the human review before it is
+  // the whole point of keeping the two apart.
+  test.each(['Save and publish', 'Save and submit'])(
+    'refuses "%s"', async (label) => {
+      expect(await finds(`<button title="${label}"></button>`))
+        .toMatchObject({ ok: false, step: 'no-save-control' });
+    });
+
+  test('prefers the exact wording when the page offers both', async () => {
+    const out = await finds(
+      '<button title="Save and continue"></button><button title="Save draft"></button>');
+    expect(out.label).toBe('Save draft');
+  });
+});
+
 describe('what counts as a control', () => {
   // Partner Center's form ids say Angular Formly; its shell need not be the same
   // technology, and querySelectorAll stops at a shadow boundary.
@@ -123,23 +151,51 @@ describe('when there is no save control', () => {
     <div role="button" aria-label="Delete screenshot"></div>
     <button aria-label="Publish"></button>`;
 
-  // The bug that cost a round trip: the diagnostic filtered on save|close|submit|
-  // draft|apply|done, the same words the search had just failed on, so it came
-  // back empty exactly when it was needed.
-  test('every named control is listed, unfiltered', async () => {
+  // The bug that cost the first round trip: the diagnostic filtered on save|close|
+  // submit|draft|apply|done, the same words the search had just failed on, so it
+  // came back empty exactly when it was needed.
+  test('every control is listed, unfiltered', async () => {
     const { pageSaveDraft } = loadPageFns(PAGE);
-    const out = await pageSaveDraft();
-    expect(out.candidates.map((c) => c.name).sort())
+    const names = (await pageSaveDraft()).candidates
+      .map((line) => line.split(' :: ')[1]).sort();
+    expect(names)
       .toEqual(['Add a language', 'Availability', 'Delete screenshot', 'Publish']);
   });
 
-  // So that an empty list can be read: nothing here, or here but unreadable?
-  test('and the counts say whether the page or the reader came up empty', async () => {
-    const { pageSaveDraft } = loadPageFns('<button></button><button></button>');
+  // The bug that cost the second: only the *named* controls were listed, and the
+  // real page had 19 nameless ones — the one place a save button could still be.
+  test('including the ones with no name at all', async () => {
+    const { pageSaveDraft } = loadPageFns('<button></button><button title="Publish"></button>');
     const out = await pageSaveDraft();
-    expect(out.candidates).toEqual([]);
+    expect(out.candidates).toHaveLength(2);
+    expect(out.candidates.some((l) => l.endsWith('(no name)'))).toBe(true);
     expect(out.clickable).toBe(2);
-    expect(out.unnamed).toBe(2);
+    expect(out.unnamed).toBe(1);
+  });
+
+  // The question that decides the next move. If the words are in the DOM, the
+  // chain up to the nearest clickable ancestor — marked * — is the selector to
+  // write; if they are nowhere, this page has no save of its own and a better
+  // selector cannot help.
+  //
+  // The case that matters is a control whose own name is something else, so the
+  // name match cannot reach it while the label sits in plain sight inside it.
+  test('a save label inside a differently-named control marks that control', async () => {
+    const { pageSaveDraft } = loadPageFns(
+      '<div role="button" aria-label="Commands"><span class="lbl">Save draft</span></div>');
+    const out = await pageSaveDraft();
+    expect(out.step).toBe('no-save-control');
+    expect(out.saveWords[0].chain).toMatch(/^SPAN\.lbl < DIV\* </);
+  });
+
+  test('a save label with no clickable ancestor is still reported', async () => {
+    const { pageSaveDraft } = loadPageFns(
+      '<div class="bar"><span class="lbl">Save draft</span></div>');
+    const out = await pageSaveDraft();
+    expect(out.saveWords).toHaveLength(1);
+    expect(out.saveWords[0].text).toBe('Save draft');
+    expect(out.saveWords[0].chain).toMatch(/^SPAN\.lbl < DIV\.bar </);
+    expect(out.saveWords[0].chain).not.toMatch(/\*/);
   });
 
   // executeScript runs in the top frame only, so a control in an iframe is a
