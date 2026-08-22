@@ -70,7 +70,7 @@ function loadPageFns(html, onTick) {
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
   sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
     + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
-    + ' pageListLanguages };');
+    + ' pageListLanguages, pageDescribeSlot };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -567,7 +567,7 @@ describe('uploading into a slot that already has images', () => {
     document.querySelectorAll('input[type="file"]').forEach((inp) => {
       Object.defineProperty(inp, 'files', { value: null, writable: true, configurable: true });
     });
-    expect(pageUploadScreenshot(b64, 'x.png')).toMatchObject({ chose: 'last' });
+    expect(pageUploadScreenshot(b64, 'x.png')).toMatchObject({ chose: 'no-thumbnail' });
     expect(document.querySelector('.adder').files[0].name).toBe('x.png');
   });
 });
@@ -657,5 +657,107 @@ describe('deleting a screenshot', () => {
     const out = await pageDeleteOneScreenshot();
     expect(out).toMatchObject({ ok: false, step: 'delete-did-not-take', sawDialog: false });
     expect(out.detail).toMatch(/does ask for confirmation/);
+  });
+});
+
+// ── choosing the uploader by structure ───────────────────────────────────────
+//
+// The caption rule worked on an empty slot and stopped working once there was a
+// thumbnail beside it: the wording moved, and the run picked a replacement
+// uploader again. Structure does not move — a replacement uploader shares its
+// card with the thumbnail it would replace, the add uploader's card has none.
+//
+// Getting this wrong does not fail loudly. Filling a replacement uploader
+// replaces screenshot 1 with screenshot 2, the upload reports success, and the
+// run times out waiting for a count that will never move.
+describe('which uploader gets the file', () => {
+  const build = (html) => {
+    document.body.innerHTML = `<screenshots>${html}</screenshots>`;
+    document.querySelectorAll('img').forEach((img) => {
+      Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
+    });
+    document.querySelectorAll('input[type="file"]').forEach((inp) => {
+      Object.defineProperty(inp, 'files', { value: null, writable: true, configurable: true });
+    });
+  };
+  const b64 = Buffer.from('PNG').toString('base64');
+  const CARD = (cls, img) => `<div class="${cls}">${img ? '<img alt="s" src="x">' : ''}
+    <form><input type="file" class="${cls}-in" accept=".png"></form></div>`;
+
+  test('the one whose card has no thumbnail', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    build(CARD('shot', true) + CARD('add', false));
+    expect(pageUploadScreenshot(b64, 'p2.png')).toMatchObject({ chose: 'no-thumbnail' });
+    expect(document.querySelector('.shot-in').files).toBeNull();
+    expect(document.querySelector('.add-in').files[0].name).toBe('p2.png');
+  });
+
+  // The ordering the caption rule assumed is not guaranteed, and structure holds
+  // either way round.
+  test('even when it comes first', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    build(CARD('add', false) + CARD('shot', true));
+    pageUploadScreenshot(b64, 'p2.png');
+    expect(document.querySelector('.add-in').files[0].name).toBe('p2.png');
+    expect(document.querySelector('.shot-in').files).toBeNull();
+  });
+
+  test('and four thumbnails do not change that', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    build(CARD('shot', true).repeat(4) + CARD('add', false));
+    expect(pageUploadScreenshot(b64, 'p5.png')).toMatchObject({ inputs: 5 });
+    document.querySelectorAll('.shot-in').forEach((i) => expect(i.files).toBeNull());
+    expect(document.querySelector('.add-in').files[0].name).toBe('p5.png');
+  });
+
+  // An uploader that reads files[0] and resets its input sees no change when the
+  // same element is assigned again while still holding the previous file.
+  test('the input is cleared before it is filled', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    build(CARD('add', false));
+    const input = document.querySelector('.add-in');
+    const cleared = [];
+    Object.defineProperty(input, 'value', {
+      get: () => '', set: (v) => cleared.push(v), configurable: true,
+    });
+    pageUploadScreenshot(b64, 'p1.png');
+    expect(cleared).toEqual(['']);
+  });
+});
+
+// ── describing the slot when an upload goes quiet ────────────────────────────
+//
+// An upload that reports success while the count stays put is the one failure a
+// timeout cannot explain, and it has now had two different causes. The abort
+// carries the page state so the next one is one round trip, not three.
+describe('the slot description', () => {
+  test('says what is in each uploader and what is on screen', () => {
+    const { pageDescribeSlot } = loadPageFns('');
+    document.body.innerHTML = `<screenshots>
+      <div class="shot"><img alt="Screenshot p1.png" src="x">
+        <button aria-label="Delete"></button>
+        <form><input type="file" class="a"></form></div>
+      <div class="add"><span>Add Image</span>
+        <form><input type="file" class="b"></form></div></screenshots>`;
+    document.querySelectorAll('img').forEach((img) => {
+      Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
+    });
+    Object.defineProperty(document.querySelector('.a'), 'files',
+      { value: [{ name: 'stuck.png' }], configurable: true });
+
+    const out = pageDescribeSlot();
+    expect(out.fileInputs).toHaveLength(2);
+    // The distinction that matters: an uploader that never drained is a different
+    // problem from one that never received a second file.
+    expect(out.fileInputs[0].holds).toBe('stuck.png');
+    expect(out.fileInputs[1].holds).toBeNull();
+    expect(out.fileInputs[1].caption).toBe('Add Image');
+    expect(out.images.map((i) => i.alt)).toEqual(['Screenshot p1.png']);
+    expect(out.controls).toEqual(['Delete']);
+  });
+
+  test('and refuses rather than describing the wrong page', () => {
+    const { pageDescribeSlot } = loadPageFns('<div>somewhere else</div>');
+    expect(pageDescribeSlot()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
   });
 });

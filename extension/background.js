@@ -176,7 +176,16 @@ async function waitForShotCount(driver, tabId, scope, expected, timeoutMs) {
       if (res.count >= expected) return res.count;
     }
   }
-  throw new PublishError(`Screenshot count (${scope}) did not reach ${expected} within ${timeoutMs / 1000}s (last: ${last})`, null);
+  // An upload that reports success while the count stays put is the one failure
+  // a timeout cannot explain by itself, and it has now had two different causes.
+  // Drivers that can describe the slot do so here, so the abort carries the page
+  // state instead of sending the operator back to probe a page the run has left.
+  let state = null;
+  if (typeof driver.describeAssets === 'function') {
+    try { state = await driver.describeAssets(tabId, scope); }
+    catch (e) { state = { describeFailed: String(e) }; }
+  }
+  throw new PublishError(`Screenshot count (${scope}) did not reach ${expected} within ${timeoutMs / 1000}s (last: ${last})`, state);
 }
 
 async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress) {
