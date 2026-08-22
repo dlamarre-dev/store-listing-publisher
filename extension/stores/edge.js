@@ -134,11 +134,33 @@ function pageProbe() {
       .test(l.href + ' ' + l.text))
     .slice(0, 50);
 
-  const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+  // Anything clickable, not just <button> — the first dump of a details page
+  // captured 46 controls and none of them was "Save draft", which the docs put in
+  // the upper right of that very page. Anchors, menu items and submit inputs are
+  // in scope now, disabled state is reported, and there is no cap: a missing
+  // control that the page definitely has is the worst kind of gap.
+  const CLICKABLE = 'button, [role="button"], a[role="menuitem"], [role="menuitem"],'
+    + ' input[type="submit"], input[type="button"]';
+  const buttons = Array.from(document.querySelectorAll(CLICKABLE))
     .filter(visible)
-    .map(b => (b.getAttribute('aria-label') || txt(b)).slice(0, 50))
-    .filter(Boolean)
-    .slice(0, 80);
+    .map(b => {
+      const name = (b.getAttribute('aria-label') || txt(b)).slice(0, 50);
+      const off = b.disabled || b.getAttribute('aria-disabled') === 'true';
+      return name ? (off ? `${name} [disabled]` : name) : '';
+    })
+    .filter(Boolean);
+
+  // The page's action bar, called out separately because it is what a write needs
+  // and what the first dump missed. Matched on the words the docs use.
+  const actions = Array.from(document.querySelectorAll(CLICKABLE + ', a'))
+    .filter(visible)
+    .map(el => ({
+      tag: el.tagName,
+      role: el.getAttribute('role'),
+      name: (el.getAttribute('aria-label') || txt(el)).slice(0, 50),
+      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+    }))
+    .filter(a => /save|close|submit|publish|draft|discard|cancel/i.test(a.name));
 
   const images = Array.from(document.querySelectorAll('img'))
     .filter(visible).filter(i => i.clientWidth >= 40)
@@ -151,7 +173,67 @@ function pageProbe() {
     title: document.title,
     headings: headings.map(txt).slice(0, 80),
     tables, links, textareas, editables, inputs, fileInputs, images, buttons,
+    actions,
   };
+}
+
+// Saves the current "Details for <language>" page.
+//
+// This store needs it and the Chrome Web Store does not, and the difference is
+// structural rather than a preference: the CWS keeps all 43 languages behind one
+// dropdown on a single page, so one manual "Save draft" at the end commits every
+// one of them. Partner Center gives each language its own page, and leaving a page
+// discards what was typed into it. Without this step a run would write 43
+// descriptions and keep none.
+//
+// It searches anchors and menu items as well as buttons, because the first dump of
+// a details page found no "Save draft" among its <button> elements even though the
+// documentation puts one in the upper right — so the control is something else,
+// and this reports what it did find rather than failing silently.
+async function pageSaveDraft() {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const name = el => (el.getAttribute('aria-label') || txt(el)).trim();
+  const SELECTOR = 'button, [role="button"], a, [role="menuitem"],'
+    + ' input[type="submit"], input[type="button"]';
+
+  const clickable = Array.from(document.querySelectorAll(SELECTOR)).filter(visible);
+  // "Save draft" first, then a bare "Save": the exact wording is documented, but
+  // a console that renames its own button is likelier than one that stops saving.
+  const target = clickable.find(el => /save\s*draft/i.test(name(el)))
+    || clickable.find(el => /^save$/i.test(name(el)));
+
+  if (!target) {
+    return {
+      ok: false,
+      step: 'no-save-control',
+      // Everything with a plausible name, so the next attempt is aimed rather
+      // than guessed again.
+      candidates: clickable
+        .map(el => ({ tag: el.tagName, role: el.getAttribute('role'), name: name(el),
+                      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true') }))
+        .filter(c => /save|close|submit|draft|apply|done/i.test(c.name))
+        .slice(0, 20),
+      detail: 'No "Save draft" control found on this page. Leaving a details page '
+        + 'without saving discards the description, so nothing was written. The '
+        + 'candidates listed are what the page does offer.',
+    };
+  }
+
+  const label = name(target);
+  if (target.disabled || target.getAttribute('aria-disabled') === 'true') {
+    // Partner Center greys Save out when nothing changed. That is a success, not
+    // a failure: it means the field already held what we were about to write.
+    return { ok: true, step: 'nothing-to-save', label };
+  }
+
+  target.click();
+  await sleep(2500);
+  return { ok: true, step: 'saved', label };
 }
 
 // Opens the "Add a language" control and dumps its options, then closes it.
@@ -561,6 +643,25 @@ async function edgeExec(tabId, func, args = []) {
   return results?.[0]?.result;
 }
 
+// Navigates the tab to the Store listings page and waits for it to settle.
+//
+// Self-contained rather than reusing background.js's waitForTabComplete: that one
+// is declared with const in a script the manifest loads after this file, and
+// depending on the evaluation order of two classic scripts to be reachable at call
+// time is a coupling that works until someone reorders the manifest.
+async function goToListings(tabId, listingUrl) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  await chrome.tabs.update(tabId, { url: listingUrl });
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.status === 'complete') break;
+  }
+  // Partner Center renders its table after load, so a complete tab is not yet a
+  // page with rows on it.
+  await sleep(3000);
+}
+
 // The steps that still need a dump of a "Details for <language>" page. Returning
 // ok:false rather than nothing is what lets the orchestration abort with a
 // message instead of walking into a code path built for a result.
@@ -620,8 +721,21 @@ const EdgeDriver = {
 
   // A navigation, not a dropdown pick: this store has no in-place switch. Passes
   // every alias, because Partner Center's name is not always ours.
-  selectLanguage: (tabId, locale) =>
-    edgeExec(tabId, pageOpenLanguage, [languageNames(locale)]),
+  //
+  // It goes back to the listings page FIRST. The row buttons it clicks exist only
+  // there, so after writing one language the walk is standing on a details page
+  // with nothing to click — the second locale of a run would fail as though the
+  // language were missing. `ctx.listingUrl` comes from the orchestration; without
+  // it the driver falls back to clicking whatever is on the current page, which is
+  // right for the first locale and for a probe.
+  async selectLanguage(tabId, locale, ctx) {
+    if (ctx?.listingUrl) await goToListings(tabId, ctx.listingUrl);
+    return edgeExec(tabId, pageOpenLanguage, [languageNames(locale)]);
+  },
+
+  // Each language is its own page here, and leaving one discards what was typed.
+  // The orchestration calls this after writing, on stores that expose it.
+  saveDraft: tabId => edgeExec(tabId, pageSaveDraft),
 
   setDescription: (tabId, text, apply) =>
     edgeExec(tabId, pageSetDescription, [text, apply]),
