@@ -265,6 +265,43 @@ describe('a Save that is greyed out', () => {
   });
 });
 
+describe('the probe and the four asset slots', () => {
+  // Each slot — logo, small tile, screenshots, large tile — owns a file input, and
+  // an earlier dump found only two of them. That dump used a flat query against a
+  // page that keeps its controls inside web components: the others were out of
+  // scope, not absent. Two hidden inputs with identical `accept` are then told
+  // apart by where they live, which is what chain and label report.
+  const slot = (caption) => {
+    const host = document.createElement('asset-upload');
+    host.innerHTML = `<h3>${caption}</h3>`;
+    document.body.appendChild(host);
+    host.attachShadow({ mode: 'open' }).innerHTML =
+      '<div class="drop"><input type="file" accept=".png"></div>';
+    return host;
+  };
+
+  test('finds a file input inside a component, not just the light-DOM ones', () => {
+    const { pageProbe } = loadPageFns('<input type="file" accept=".png">');
+    slot('Screenshots');
+    expect(pageProbe().fileInputs).toHaveLength(2);
+  });
+
+  test('and reports the component chain above each one', () => {
+    const { pageProbe } = loadPageFns('');
+    slot('Screenshots');
+    const [input] = pageProbe().fileInputs;
+    expect(input.chain).toMatch(/^INPUT < DIV\.drop < ASSET-UPLOAD/);
+  });
+
+  test('and the caption beside it, which is what tells the slots apart', () => {
+    const { pageProbe } = loadPageFns('');
+    slot('Store logo');
+    slot('Screenshots');
+    expect(pageProbe().fileInputs.map((f) => f.label))
+      .toEqual(['Store logo', 'Screenshots']);
+  });
+});
+
 describe('the probe', () => {
   // The probe is how the next unknown control gets found, so it has to read names
   // the same way — a probe blind to icon-only buttons sends the operator back for
