@@ -531,7 +531,15 @@ async function runPublish(rawConfig, opts, onProgress) {
     }
   }
 
-  onProgress('All done. Review the page, then click "Save draft" yourself — nothing has been saved.');
+  // Which of the two closing lines is true depends on whether this store commits
+  // per page. A run that printed `saved ("Save draft")` for every locale and then
+  // "nothing has been saved" contradicted itself, and the reading that matters —
+  // do I still have to press something — is the one it got wrong.
+  onProgress(typeof driver.saveDraft === 'function'
+    ? 'All done. Each page was saved as it was written; review them, then submit '
+      + 'from the store when you are satisfied.'
+    : 'All done. Review the page, then click "Save draft" yourself — nothing has '
+      + 'been saved.');
 }
 
 // ── persistent run log ──────────────────────────────────────────────────────
