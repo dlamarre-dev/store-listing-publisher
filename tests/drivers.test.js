@@ -122,29 +122,15 @@ describe('ownsUrl recognises each store', () => {
 });
 
 describe('the Edge driver is honest about being unfinished', () => {
-  // Split by what the Store listings dump settled. selectLanguage is written
-  // against the real aria-labels ("Edit <Language> language details page"); the
-  // rest live on a "Details for <language>" page that has not been probed, and
-  // must keep refusing until it has been.
-  const IMPLEMENTED = ['probe', 'listLanguages', 'addLanguage', 'selectLanguage',
-                       'setDescription', 'countScreenshots', 'deleteOneScreenshot',
-                       'duplicateScreenshots'];
-  const PENDING = STEPS.filter((s) => !IMPLEMENTED.includes(s));
+  // Every step is written against a dump of the real page now. uploadScreenshot
+  // was the last holdout: four asset slots expose identical hidden .png inputs,
+  // and it refused until a probe showed that the component each lives in —
+  // <screenshots> for this one — is what separates them.
+  const IMPLEMENTED = STEPS.slice();
+  const PENDING = [];
 
-  // uploadScreenshot is the only one left, and it is left on purpose: a details
-  // page shows two hidden .png inputs for four asset slots, and putting a
-  // screenshot in the logo slot is a bad way to learn which is which.
-  test('only the genuinely ambiguous step is still pending', () => {
-    expect(PENDING).toEqual(['uploadScreenshot']);
-  });
-
-  test.each(PENDING)('%s refuses instead of returning nothing', async (step) => {
-    const result = await drivers.edge[step](1, 'x', 'y', 'z');
-    expect(result).toMatchObject({ ok: false, step: 'not-implemented', store: 'edge' });
-    // The refusal has to say what to do next, or a run just stops with no clue.
-    expect(result.detail).toMatch(/Probe page/);
-    // A refusal has to say WHY, not just that it refuses.
-    expect(result.detail.length).toBeGreaterThan(80);
+  test('nothing is left refusing', () => {
+    expect(PENDING).toEqual([]);
   });
 
   test.each(IMPLEMENTED)('%s is wired to the page, not stubbed', async (step) => {

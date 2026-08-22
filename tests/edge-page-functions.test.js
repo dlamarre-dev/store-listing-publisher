@@ -1,7 +1,14 @@
 /**
  * @jest-environment jsdom
  */
-// Finding Partner Center's "Save draft" control.
+// The Partner Center page functions, against a real DOM.
+//
+// A real DOM rather than a stub, because every bug this file pins is a wrong
+// belief about DOM semantics — and a stub written from the same belief would
+// reproduce it faithfully. Three controls have now been missed by a selector
+// narrower than the page.
+//
+// ── Finding "Save draft" ─────────────────────────────────────────────────────
 //
 // This is the step that blocks every real run: each language has its own page and
 // leaving one discards what was typed into it, so a description that is written
@@ -18,8 +25,6 @@
 //     words that had just failed to match, so it could not tell "nothing here"
 //     from "here, but unnamed" and reported the emptier of the two.
 //
-// A real DOM rather than a stub, because the whole class of bug is a wrong belief
-// about DOM semantics, which a stub written from the same belief would reproduce.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -43,10 +48,25 @@ function loadPageFns(html) {
     Node,
     setTimeout: (fn) => { fn(); return 0; },
     console,
+    // Host objects the vm realm does not carry. jsdom has no working
+    // DataTransfer, so it gets the smallest one that behaves: a list a File goes
+    // into and comes out of, which is all the upload path uses it for.
+    Event: window.Event,
+    File: window.File,
+    Blob: window.Blob,
+    atob: (b64) => Buffer.from(b64, 'base64').toString('binary'),
+    DataTransfer: class {
+      constructor() {
+        const files = [];
+        this.files = files;
+        this.items = { add: (f) => files.push(f) };
+      }
+    },
   };
   const sources = SCRIPTS.map(
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
-  sources.push('globalThis.__pages = { pageSaveDraft, pageProbe };');
+  sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
+    + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -319,5 +339,119 @@ describe('the probe', () => {
     expect(shell.shadowRoots).toBe(1);
     expect(shell.clickable).toBe(1);
     expect(shell.unnamed).toBe(1);
+  });
+});
+
+// ── the screenshot slot ──────────────────────────────────────────────────────
+//
+// A details page carries four asset slots — logo, small tile, screenshots, large
+// tile — that are identical from the outside: the same hidden INPUT.fileuploader
+// with accept=".png", the same Magnify / Delete / Duplicate trio, no aria-label
+// naming any of them. The probe of a real French page showed the one thing that
+// separates them, the component each lives in:
+//
+//   INPUT.fileuploader < FORM < SCREENSHOTS < …
+//   INPUT.fileuploader < FORM < DIV.row.form-group-tall < … < SECTION.section
+//
+// So these tests are all about scope. A step that reaches outside <screenshots>
+// can put a screenshot in the logo slot, and no assertion about the happy path
+// would notice.
+describe('the screenshot slot', () => {
+  const page = ({ shots = 0, withSlot = true } = {}) => {
+    const thumb = (n, alt) => `<div class="asset"><img alt="${alt}" src="x.png">
+      <button aria-label="Magnify"></button><button aria-label="Delete"></button></div>`;
+    const inside = Array.from({ length: shots }, (_, i) => thumb(i, `Screenshot shot${i}.png`))
+      .join('')
+      + (shots ? '<button>Duplicate this screenshot for all languages</button>' : '')
+      + '<form><input type="file" class="fileuploader" accept=".png"></form>';
+
+    // The logo slot: same controls, same input, different component. Nothing here
+    // may ever be counted, clicked or filled.
+    const logo = `<section class="section"><div class="row form-group-tall">
+      <img alt="Extension Store logo icon128.png" src="l.png">
+      <button aria-label="Magnify"></button><button aria-label="Delete"></button>
+      <button>Duplicate this logo for all languages</button>
+      <form><input type="file" class="fileuploader" accept=".png"></form>
+    </div></section>`;
+
+    document.body.innerHTML = logo + (withSlot ? `<screenshots>${inside}</screenshots>` : '');
+    document.querySelectorAll('img').forEach((img) => {
+      Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
+    });
+    document.querySelectorAll('input[type="file"]').forEach((inp) => {
+      Object.defineProperty(inp, 'files', { value: null, writable: true, configurable: true });
+    });
+  };
+
+  test('counts only what is in it', () => {
+    const { pageCountScreenshots } = loadPageFns('');
+    page({ shots: 2 });
+    expect(pageCountScreenshots()).toMatchObject({ ok: true, count: 2 });
+  });
+
+  test('and reports the filenames, which is how a re-run knows what is there', () => {
+    const { pageCountScreenshots } = loadPageFns('');
+    page({ shots: 2 });
+    expect(pageCountScreenshots().files)
+      .toEqual(['Screenshot shot0.png', 'Screenshot shot1.png']);
+  });
+
+  test('uploading fills the slot input, never the logo one', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    page();
+    const b64 = Buffer.from('PNGDATA').toString('base64');
+    expect(pageUploadScreenshot(b64, 'Promo_1_fr.png'))
+      .toMatchObject({ ok: true, filename: 'Promo_1_fr.png' });
+
+    const [logoInput, slotInput] = document.querySelectorAll('input[type="file"]');
+    expect(logoInput.files).toBeNull();
+    expect(slotInput.files[0].name).toBe('Promo_1_fr.png');
+  });
+
+  test('deleting clicks a Delete inside the slot, not the logo Delete', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    page({ shots: 1 });
+    const logoDelete = document.querySelector('section [aria-label="Delete"]');
+    let logoClicks = 0;
+    logoDelete.addEventListener('click', () => { logoClicks += 1; });
+    // The page removes the thumbnail, which is what the step waits for — it polls
+    // the count rather than trusting the click, because Partner Center removes it
+    // asynchronously and a loop that trusted the click would spin on a stale DOM.
+    document.querySelector('screenshots [aria-label="Delete"]')
+      .addEventListener('click', (e) => e.target.closest('.asset').remove());
+
+    expect(await pageDeleteOneScreenshot()).toMatchObject({ ok: true, before: 1, after: 0 });
+    expect(logoClicks).toBe(0);
+  });
+
+  test('duplicating presses the slot button, not the logo one', async () => {
+    const { pageDuplicateScreenshots } = loadPageFns('');
+    page({ shots: 1 });
+    let pressed = null;
+    document.addEventListener('click', (e) => { pressed = e.target.textContent; }, true);
+    await pageDuplicateScreenshots();
+    expect(pressed).toBe('Duplicate this screenshot for all languages');
+  });
+
+  // The refusal that matters. Without the component there is no way to tell the
+  // four inputs apart, and picking one is how a screenshot lands in the logo slot.
+  test('every step refuses when the component is not on the page', async () => {
+    const fns = loadPageFns('');
+    page({ withSlot: false });
+    expect(fns.pageCountScreenshots()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+    expect(fns.pageUploadScreenshot('AAA=', 'x.png'))
+      .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+    expect(await fns.pageDeleteOneScreenshot())
+      .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+    expect(await fns.pageDuplicateScreenshots())
+      .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+  });
+
+  test('and the refusal shows the inputs it would not choose between', () => {
+    const { pageUploadScreenshot } = loadPageFns('');
+    page({ withSlot: false });
+    const out = pageUploadScreenshot('AAA=', 'x.png');
+    expect(out.fileInputs).toHaveLength(1);
+    expect(out.fileInputs[0].chain).toMatch(/SECTION/);
   });
 });
