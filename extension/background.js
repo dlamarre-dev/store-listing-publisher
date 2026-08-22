@@ -224,9 +224,11 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
     // Which gesture the page accepted, when the driver reports one and it was not
     // the first. That is the answer to a question three rounds of guessing could
     // not settle, so it belongs in the log rather than in a diagnostic.
-    onProgress(up.via && up.via !== 1
-      ? `  upload ${name} ✓ (accepted on gesture ${up.via})`
-      : `  upload ${name} ✓`);
+    const how = [
+      up.via ? `gesture ${up.via}` : null,
+      up.tookMs ? `${(up.tookMs / 1000).toFixed(1)}s` : null,
+    ].filter(Boolean).join(', ');
+    onProgress(how ? `  upload ${name} ✓ (${how})` : `  upload ${name} ✓`);
   }
 }
 

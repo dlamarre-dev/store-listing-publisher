@@ -23,8 +23,8 @@ const SCRIPTS = ['lib/locales.js', 'stores/cws.js', 'stores/edge.js'];
 // nothing. `delay` makes it react only after that many count polls, which is how
 // a slow-but-working gesture is told from one that is ignored.
 function load({ answers = 1, delay = 0, count = 0, applyResult = null,
-                stored = null } = {}) {
-  const state = { count, applied: [], polls: 0, pending: null, stored };
+                stored = null, latency = 0 } = {}) {
+  const state = { count, applied: [], polls: 0, pending: null, stored, latency };
 
   const sandbox = {
     console,
@@ -39,8 +39,23 @@ function load({ answers = 1, delay = 0, count = 0, applyResult = null,
       // about the remembering, not about whether it is required.
       storage: {
         local: {
-          get: async (key) => (state.stored === null ? {} : { [key]: state.stored }),
-          set: async (obj) => { state.stored = obj.edgeUploadGesture; },
+          // Takes a key or a list of them, like the real one: the driver reads the
+          // gesture and the measured latency together.
+          get: async (keys) => {
+            const want = Array.isArray(keys) ? keys : [keys];
+            const out = {};
+            if (state.stored !== null && want.includes('edgeUploadGesture')) {
+              out.edgeUploadGesture = state.stored;
+            }
+            if (state.latency && want.includes('edgeUploadLatencyMs')) {
+              out.edgeUploadLatencyMs = state.latency;
+            }
+            return out;
+          },
+          set: async (obj) => {
+            if ('edgeUploadGesture' in obj) state.stored = obj.edgeUploadGesture;
+            if ('edgeUploadLatencyMs' in obj) state.latency = obj.edgeUploadLatencyMs;
+          },
         },
       },
       scripting: {
@@ -90,16 +105,20 @@ describe('escalation', () => {
     expect(state.applied).toEqual([1]);
   });
 
-  test('reaches the drop when only a drop is answered', async () => {
+  // The drop is tried LAST, because it has never been accepted on the real
+  // console and while it sat second it cost a whole window on every upload.
+  test('reaches the drop last, when only a drop is answered', async () => {
     const { res, state } = await upload({ answers: 2 });
     expect(res).toMatchObject({ ok: true, via: 2 });
-    expect(state.applied).toEqual([1, 2]);
+    expect(state.applied).toEqual([1, 3, 2]);
   });
 
   test('and the blur sequence when only that is', async () => {
     const { res, state } = await upload({ answers: 3 });
     expect(res).toMatchObject({ ok: true, via: 3 });
-    expect(state.applied).toEqual([1, 2, 3]);
+    // Second, not third: gestures 1 and 3 are the two that assign input.files,
+    // and it is the second assignment the console honours.
+    expect(state.applied).toEqual([1, 3]);
   });
 
   // The reason to verify before escalating rather than firing all three: the same
@@ -114,8 +133,8 @@ describe('escalation', () => {
     const { res, state } = await upload({ answers: null });
     expect(res).toMatchObject({ ok: false, step: 'upload-not-accepted',
                                 before: 0, after: 0 });
-    expect(state.applied).toEqual([1, 2, 3]);
-    expect(res.tried.map((t) => t.mechanism)).toEqual([1, 2, 3]);
+    expect(state.applied).toEqual([1, 3, 2]);
+    expect(res.tried.map((t) => t.mechanism)).toEqual([1, 3, 2]);
     expect(res.detail).toMatch(/thumbnail count/);
   });
 
@@ -166,7 +185,7 @@ describe('the remembered gesture', () => {
   test('and the next upload starts there', async () => {
     const { driver, state } = load({ answers: 3 });
     await driver.uploadScreenshot(1, B64, 'p1.png');
-    expect(state.applied).toEqual([1, 2, 3]);
+    expect(state.applied).toEqual([1, 3]);
 
     state.applied.length = 0;
     const res = await driver.uploadScreenshot(1, B64, 'p2.png');
@@ -195,5 +214,55 @@ describe('the remembered gesture', () => {
     await driver.uploadScreenshot(1, B64, 'p1.png');
     // The preferred one first, then the others — in order, and all of them.
     expect(state.applied).toEqual([2, 1, 3]);
+  });
+});
+
+// ── the measured window ──────────────────────────────────────────────────────
+//
+// A gesture that will not be taken costs the whole wait before the next is
+// tried, so what that wait should be is the number that decides whether 43
+// locales take twenty minutes or two hours. It is measured rather than chosen:
+// every success reports how long it took, the slowest is remembered, and the
+// window is four times that — floored so a fast console cannot make the check
+// flaky, capped so a slow one cannot make a run unbounded.
+describe('the wait before escalating', () => {
+  // Polls counted at the boundary: one before, one after, and the rest inside
+  // the three windows.
+  const pollsFor = async (opts) => (await upload({ answers: null, ...opts })).state.polls;
+
+  test('is the conservative maximum until something has been measured', async () => {
+    // 30s / 750ms = 40 polls per gesture, three gestures, plus before and after.
+    expect(await pollsFor({})).toBe(122);
+  });
+
+  test('and four times the measured latency once there is one', async () => {
+    // 2s measured → 8s window → 11 polls per gesture.
+    expect(await pollsFor({ latency: 2000 })).toBe(35);
+  });
+
+  test('with a floor, so a fast console does not make it flaky', async () => {
+    // 200ms measured would give 800ms; the floor holds it at 6s → 8 polls.
+    expect(await pollsFor({ latency: 200 })).toBe(26);
+  });
+
+  test('and a cap, so a slow one cannot make a run unbounded', async () => {
+    expect(await pollsFor({ latency: 60000 })).toBe(122);
+  });
+
+  test('a success reports how long it took, which is what feeds all this', async () => {
+    const { res, state } = await upload({ answers: 1, delay: 3 });
+    expect(res.tookMs).toBe(4 * 750);
+    expect(state.latency).toBe(4 * 750);
+  });
+
+  // The slowest, not the latest: one quick upload must not shrink the window
+  // below what a slow one needed.
+  test('and the remembered latency is the slowest seen', async () => {
+    const { driver, state } = load({ answers: 1, delay: 5 });
+    await driver.uploadScreenshot(1, B64, 'p1.png');
+    const slow = state.latency;
+    state.pending = null;
+    await driver.uploadScreenshot(1, B64, 'p2.png');
+    expect(state.latency).toBe(slow);
   });
 });

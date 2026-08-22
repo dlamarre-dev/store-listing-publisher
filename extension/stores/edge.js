@@ -1360,26 +1360,74 @@ const edgeSleep = ms => new Promise(r => setTimeout(r, ms));
 // and the rest still follow. Persisted, because the answer is a property of the
 // console rather than of a run — and if the console changes its mind, the first
 // upload of the next run relearns it.
-const GESTURES = [1, 2, 3];
+// Gestures 1 and 3 both assign input.files; gesture 2, a drop, does not. That
+// distinction turned out to matter more than the gestures themselves.
+//
+// A five-screenshot run reported 1, 3, 1, 3, 1 — the winner alternating. Reading
+// it back through the learned order: after a success the preference is whatever
+// just worked, that gesture is tried first next time and fails, and the other
+// FILLING gesture takes it. In other words the console swallows the first
+// assignment after a completed upload and honours the second, and which gesture
+// makes it is beside the point.
+//
+// Two consequences, and neither is "fill twice". Doing that would be a guess
+// about a slot that appends rather than replaces, and guessing wrong appends a
+// duplicate — the cap is six and we upload five.
+//
+//  - The drop goes LAST. It has never been accepted in any observed run, and
+//    while it sat second it cost a whole window on every upload.
+//  - The window is measured rather than assumed. A gesture that will not be
+//    taken costs the full wait, so what that wait should be is the only number
+//    that matters here — and the runs know it: every success reports how long it
+//    took, the longest is remembered, and the failure window is a multiple of it.
+//    Unknown means the old conservative 30s, so a first run is never rushed.
+const GESTURES = [1, 3, 2];
 const GESTURE_KEY = 'edgeUploadGesture';
+const LATENCY_KEY = 'edgeUploadLatencyMs';
+const POLL_MS = 750;
+const WINDOW_MIN_MS = 6000;
+const WINDOW_MAX_MS = 30000;
 let learnedGesture = null;
+let learnedLatency = null;
+
+async function loadLearned() {
+  if (learnedGesture !== null) return;
+  learnedGesture = 0;
+  learnedLatency = 0;
+  try {
+    const stored = await chrome.storage.local.get([GESTURE_KEY, LATENCY_KEY]);
+    learnedGesture = (stored && stored[GESTURE_KEY]) || 0;
+    learnedLatency = (stored && stored[LATENCY_KEY]) || 0;
+  } catch (e) { /* session-only is still worth having */ }
+}
 
 async function gestureOrder() {
-  if (learnedGesture === null) {
-    try {
-      const stored = await chrome.storage.local.get(GESTURE_KEY);
-      learnedGesture = (stored && stored[GESTURE_KEY]) || 0;
-    } catch (e) { learnedGesture = 0; }
-  }
+  await loadLearned();
   if (!learnedGesture) return GESTURES;
   return [learnedGesture, ...GESTURES.filter(m => m !== learnedGesture)];
 }
 
-async function rememberGesture(mechanism) {
-  if (mechanism === learnedGesture) return;
-  learnedGesture = mechanism;
-  try { await chrome.storage.local.set({ [GESTURE_KEY]: mechanism }); }
-  catch (e) { /* a session-only preference is still worth having */ }
+// How long to wait on a gesture before trying the next.
+//
+// Four times the slowest success ever seen, floored at 6s so a fast console does
+// not make the check flaky, and capped at 30s so a slow one cannot make a
+// 43-locale run unbounded.
+async function gestureWindowMs() {
+  await loadLearned();
+  if (!learnedLatency) return WINDOW_MAX_MS;
+  return Math.min(WINDOW_MAX_MS, Math.max(WINDOW_MIN_MS, learnedLatency * 4));
+}
+
+async function rememberGesture(mechanism, latencyMs) {
+  const nextGesture = mechanism;
+  const nextLatency = Math.max(learnedLatency || 0, latencyMs || 0);
+  if (nextGesture === learnedGesture && nextLatency === learnedLatency) return;
+  learnedGesture = nextGesture;
+  learnedLatency = nextLatency;
+  try {
+    await chrome.storage.local.set({ [GESTURE_KEY]: nextGesture,
+                                     [LATENCY_KEY]: nextLatency });
+  } catch (e) { /* as above */ }
 }
 
 async function edgeExec(tabId, func, args = []) {
@@ -1543,13 +1591,15 @@ const EdgeDriver = {
       }
       if (!applied) continue;
 
-      for (let i = 0; i < 40; i += 1) {
-        await edgeSleep(750);
+      const polls = Math.ceil(await gestureWindowMs() / POLL_MS);
+      for (let i = 1; i <= polls; i += 1) {
+        await edgeSleep(POLL_MS);
         const now = await shots();
         if (now !== null && before !== null && now > before) {
-          await rememberGesture(mechanism);
+          const tookMs = i * POLL_MS;
+          await rememberGesture(mechanism, tookMs);
           return { ok: true, filename, via: mechanism, before, after: now, tried,
-                   chose: applied.chose };
+                   chose: applied.chose, tookMs };
         }
       }
     }
@@ -1616,12 +1666,16 @@ const EdgeDriver = {
 //   component's state, and that is still unexplained. The upload therefore
 //   verifies each mechanism against the thumbnail count instead of trusting its
 //   own dispatch, and reports which one worked.
-// - **The gesture this console answers is 3**, observed on a real run: the first
-//   screenshot of an empty slot went in on gesture 1, and every one after it on
-//   gesture 3 — focus / input / change / blur. Gesture 3 dispatches change too, so
-//   it is a superset of gesture 1, which is consistent with it working in both
-//   states. Not hardcoded: the driver remembers what worked and tries that first,
-//   because three rounds of reordering by reasoning is what made that necessary.
+// - **The console honours the SECOND assignment, not a particular gesture.** A
+//   five-screenshot run reported its winners as 1, 3, 1, 3, 1 — alternating,
+//   because the learned order tries whatever just worked and that one then fails.
+//   Gestures 1 and 3 are the two that assign input.files; gesture 2, a drop, does
+//   not, and has never been accepted. So an upload into a non-empty slot needs two
+//   filling attempts, and which gesture makes them is beside the point.
+//   Deliberately NOT "fill twice in one gesture": this slot appends rather than
+//   replaces, so a wrong guess there appends a duplicate — the cap is six and we
+//   upload five. The drop moved last instead, and the wait before escalating is
+//   measured from real successes rather than assumed.
 // - **Keep injected functions short.** The verify-and-escalate loop lived in the
 //   page for one round, which made a single injected script run for up to 45
 //   seconds — and a script that outlives a re-render dies with it, its promise
