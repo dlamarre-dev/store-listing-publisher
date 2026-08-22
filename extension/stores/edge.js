@@ -134,33 +134,79 @@ function pageProbe() {
       .test(l.href + ' ' + l.text))
     .slice(0, 50);
 
-  // Anything clickable, not just <button> — the first dump of a details page
-  // captured 46 controls and none of them was "Save draft", which the docs put in
-  // the upper right of that very page. Anchors, menu items and submit inputs are
-  // in scope now, disabled state is reported, and there is no cap: a missing
-  // control that the page definitely has is the worst kind of gap.
-  const CLICKABLE = 'button, [role="button"], a[role="menuitem"], [role="menuitem"],'
-    + ' input[type="submit"], input[type="button"]';
-  const buttons = Array.from(document.querySelectorAll(CLICKABLE))
-    .filter(visible)
-    .map(b => {
-      const name = (b.getAttribute('aria-label') || txt(b)).slice(0, 50);
-      const off = b.disabled || b.getAttribute('aria-disabled') === 'true';
-      return name ? (off ? `${name} [disabled]` : name) : '';
-    })
-    .filter(Boolean);
+  // Anything clickable, by affordance rather than by tag, shadow roots included.
+  //
+  // Two rounds of narrower queries each missed a control this page really has, so
+  // the probe now matches what pageSaveDraft matches: a div with a click handler
+  // is a button as far as the operator is concerned, and an icon-only command bar
+  // button carries its label in `title` or `aria-labelledby`, neither of which the
+  // old `aria-label || textContent` could read.
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const accName = el => {
+    const by = el.getAttribute('aria-labelledby');
+    const referenced = by && by.split(/\s+/)
+      .map(id => el.ownerDocument.getElementById(id)).filter(Boolean).map(txt).join(' ');
+    const alt = el.querySelector && el.querySelector('img[alt], svg > title');
+    return (el.getAttribute('aria-label')
+      || referenced
+      || el.getAttribute('title')
+      || txt(el)
+      || el.value
+      || (alt && (alt.getAttribute('alt') || txt(alt)))
+      || '').replace(/\s+/g, ' ').trim();
+  };
+  const isClickable = el => {
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (el.tagName === 'BUTTON' || el.tagName === 'A') return true;
+    if (el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type)) return true;
+    if (['button', 'menuitem', 'menuitemcheckbox', 'link', 'tab'].includes(role)) return true;
+    if (el.hasAttribute('onclick')) return true;
+    return el.hasAttribute('tabindex')
+      && !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+  };
 
-  // The page's action bar, called out separately because it is what a write needs
-  // and what the first dump missed. Matched on the words the docs use.
-  const actions = Array.from(document.querySelectorAll(CLICKABLE + ', a'))
-    .filter(visible)
-    .map(el => ({
-      tag: el.tagName,
-      role: el.getAttribute('role'),
-      name: (el.getAttribute('aria-label') || txt(el)).slice(0, 50),
-      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+  const everything = deepAll(document);
+  const controls = everything.filter(isClickable).filter(visible)
+    .map(el => ({ el, name: accName(el) }));
+
+  // No cap and no name filter: a missing control the page definitely has is the
+  // worst kind of gap, and the last dump proved a filtered diagnostic can come
+  // back empty without meaning the page is empty.
+  const buttons = controls.filter(c => c.name).map(c => {
+    const off = c.el.disabled || c.el.getAttribute('aria-disabled') === 'true';
+    const n = c.name.slice(0, 60);
+    return off ? `${n} [disabled]` : n;
+  });
+
+  // Counts, so an empty list can be told apart from an unreadable one; and frames,
+  // because executeScript runs in the top frame only — a control inside an iframe
+  // is a different fix, not a wider selector.
+  const shell = {
+    elements: everything.length,
+    shadowRoots: everything.filter(el => el.shadowRoot).length,
+    clickable: controls.length,
+    unnamed: controls.filter(c => !c.name).length,
+    frames: Array.from(document.querySelectorAll('iframe, frame'))
+      .map(f => ({ src: f.getAttribute('src'), name: f.getAttribute('name') })),
+  };
+
+  // The page's action bar, called out separately because it is what a write needs.
+  const actions = controls
+    .map(c => ({
+      tag: c.el.tagName,
+      role: c.el.getAttribute('role'),
+      name: c.name.slice(0, 60),
+      disabled: !!(c.el.disabled || c.el.getAttribute('aria-disabled') === 'true'),
     }))
-    .filter(a => /save|close|submit|publish|draft|discard|cancel/i.test(a.name));
+    .filter(a => /save|close|submit|publish|draft|discard|cancel|apply|done/i.test(a.name));
+
 
   const images = Array.from(document.querySelectorAll('img'))
     .filter(visible).filter(i => i.clientWidth >= 40)
@@ -172,6 +218,7 @@ function pageProbe() {
     url: location.href,
     title: document.title,
     headings: headings.map(txt).slice(0, 80),
+    shell,
     tables, links, textareas, editables, inputs, fileInputs, images, buttons,
     actions,
   };
@@ -186,52 +233,120 @@ function pageProbe() {
 // discards what was typed into it. Without this step a run would write 43
 // descriptions and keep none.
 //
-// It searches anchors and menu items as well as buttons, because the first dump of
-// a details page found no "Save draft" among its <button> elements even though the
-// documentation puts one in the upper right — so the control is something else,
-// and this reports what it did find rather than failing silently.
+// Finding that control has now failed twice, each time because the search was
+// narrower than the page. The lesson taken here is to stop guessing shapes: an
+// element counts as clickable by affordance rather than by tag, shadow roots are
+// walked, the name is the accessible name rather than aria-label and text, and a
+// failure dumps every named control unfiltered. The second round reported
+// `candidates: []` on a page the documentation says has a "Save draft" in its
+// upper right — a diagnostic that filtered itself on the same words that had
+// just failed to match, and so could not distinguish "nothing here" from
+// "here, unnamed".
 async function pageSaveDraft() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Every element on the page, shadow roots included.
+  //
+  // querySelectorAll stops at a shadow boundary. Partner Center's page shell and
+  // the Angular form inside it are not the same technology — the field ids say
+  // `formly_*` — so a command bar rendered as a web component would be on screen,
+  // documented, and still absent from a flat query.
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
-  const name = el => (el.getAttribute('aria-label') || txt(el)).trim();
-  const SELECTOR = 'button, [role="button"], a, [role="menuitem"],'
-    + ' input[type="submit"], input[type="button"]';
 
-  const clickable = Array.from(document.querySelectorAll(SELECTOR)).filter(visible);
-  // "Save draft" first, then a bare "Save": the exact wording is documented, but
-  // a console that renames its own button is likelier than one that stops saving.
-  const target = clickable.find(el => /save\s*draft/i.test(name(el)))
-    || clickable.find(el => /^save$/i.test(name(el)));
+  // The accessible name — not just aria-label and text.
+  //
+  // This is what the previous attempt got wrong, and it is why a page that
+  // demonstrably has a "Save draft" reported `candidates: []`. A command bar
+  // button with an icon carries its label in `title`, or points at one with
+  // `aria-labelledby`; both were unreadable here, so such a control was found,
+  // given an empty name, and then dropped by the very filter meant to describe it.
+  const accName = el => {
+    const by = el.getAttribute('aria-labelledby');
+    const referenced = by && by.split(/\s+/)
+      .map(id => el.ownerDocument.getElementById(id)).filter(Boolean).map(txt).join(' ');
+    const alt = el.querySelector && el.querySelector('img[alt], svg > title');
+    return (el.getAttribute('aria-label')
+      || referenced
+      || el.getAttribute('title')
+      || txt(el)
+      || el.value
+      || (alt && (alt.getAttribute('alt') || txt(alt)))
+      || '').replace(/\s+/g, ' ').trim();
+  };
 
-  if (!target) {
+  // Clickable by affordance rather than by tag: a div with a click handler is a
+  // button as far as the user is concerned, and two rounds of narrower guesses
+  // have now each missed a control the page really has.
+  const clickable = el => {
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (el.tagName === 'BUTTON' || el.tagName === 'A') return true;
+    if (el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type)) return true;
+    if (['button', 'menuitem', 'menuitemcheckbox', 'link', 'tab'].includes(role)) return true;
+    if (el.hasAttribute('onclick')) return true;
+    return el.hasAttribute('tabindex')
+      && !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+  };
+
+  const all = deepAll(document);
+  const controls = all.filter(clickable).filter(visible).map(el => ({ el, name: accName(el) }));
+
+  // "Save draft" first, then a bare "Save": the exact wording is documented, but a
+  // console that renames its own button is likelier than one that stops saving.
+  const hit = controls.find(c => /save\s*draft/i.test(c.name))
+    || controls.find(c => /^save$/i.test(c.name));
+
+  if (!hit) {
+    // Report before filtering. The previous version filtered its own diagnostic
+    // on the same words that had already failed to match, so an empty list could
+    // not be told apart from a list of things that simply are not Save — and the
+    // empty one is what came back. Everything named is listed, and the counts say
+    // whether the gap is "nothing here" or "here but unnamed".
+    const named = controls.filter(c => c.name);
     return {
       ok: false,
       step: 'no-save-control',
-      // Everything with a plausible name, so the next attempt is aimed rather
-      // than guessed again.
-      candidates: clickable
-        .map(el => ({ tag: el.tagName, role: el.getAttribute('role'), name: name(el),
-                      disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true') }))
-        .filter(c => /save|close|submit|draft|apply|done/i.test(c.name))
-        .slice(0, 20),
+      scanned: all.length,
+      shadowRoots: all.filter(el => el.shadowRoot).length,
+      clickable: controls.length,
+      unnamed: controls.length - named.length,
+      // Same-origin frames are reported rather than searched: executeScript runs
+      // in the top frame only, so a control inside one is unreachable from here
+      // and that is a different fix, not a wider selector.
+      frames: Array.from(document.querySelectorAll('iframe, frame'))
+        .map(f => ({ src: f.getAttribute('src'), name: f.getAttribute('name') })),
+      candidates: named.slice(0, 120).map(c => ({
+        tag: c.el.tagName,
+        role: c.el.getAttribute('role'),
+        name: c.name.slice(0, 60),
+        disabled: !!(c.el.disabled || c.el.getAttribute('aria-disabled') === 'true'),
+      })),
       detail: 'No "Save draft" control found on this page. Leaving a details page '
-        + 'without saving discards the description, so nothing was written. The '
-        + 'candidates listed are what the page does offer.',
+        + 'without saving discards the description, so nothing was written. '
+        + '"candidates" is every named clickable on the page, unfiltered.',
     };
   }
 
-  const label = name(target);
-  if (target.disabled || target.getAttribute('aria-disabled') === 'true') {
+  const label = hit.name;
+  if (hit.el.disabled || hit.el.getAttribute('aria-disabled') === 'true') {
     // Partner Center greys Save out when nothing changed. That is a success, not
     // a failure: it means the field already held what we were about to write.
     return { ok: true, step: 'nothing-to-save', label };
   }
 
-  target.click();
+  hit.el.click();
   await sleep(2500);
   return { ok: true, step: 'saved', label };
 }
