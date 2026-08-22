@@ -226,6 +226,7 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
     // not settle, so it belongs in the log rather than in a diagnostic.
     const how = [
       up.via ? `gesture ${up.via}` : null,
+      up.settleMs ? `waited ${(up.settleMs / 1000).toFixed(1)}s` : null,
       up.tookMs ? `${(up.tookMs / 1000).toFixed(1)}s` : null,
     ].filter(Boolean).join(', ');
     onProgress(how ? `  upload ${name} ✓ (${how})` : `  upload ${name} ✓`);
