@@ -16,6 +16,9 @@ const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..');
 
+// Everything the drivers need, in load order.
+const SCRIPTS = ['lib/locales.js', 'stores/cws.js', 'stores/edge.js'];
+
 function loadDrivers() {
   const sandbox = {
     chrome: { scripting: { executeScript: async () => [{ result: null }] } },
@@ -29,7 +32,11 @@ function loadDrivers() {
   // lexical binding, not a property of the global, so separate runs cannot see
   // each other's drivers — or expose them to us. The browser loads these into
   // one shared scope too, so concatenating is also the truer simulation.
-  const sources = ['stores/cws.js', 'stores/edge.js']
+  // lib/locales.js first: stores/edge.js calls languageNames() from it, so this
+  // list is also the load order the manifest has to declare. A test asserts that
+  // below — get it wrong in the manifest and the driver throws a ReferenceError
+  // on the first language, in the browser, at run time.
+  const sources = SCRIPTS
     .map((f) => fs.readFileSync(path.join(ROOT, 'extension', f), 'utf8'));
   sources.push('globalThis.__drivers = { cws: CwsDriver, edge: EdgeDriver };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
@@ -119,12 +126,16 @@ describe('the Edge driver is honest about being unfinished', () => {
   // against the real aria-labels ("Edit <Language> language details page"); the
   // rest live on a "Details for <language>" page that has not been probed, and
   // must keep refusing until it has been.
-  const IMPLEMENTED = ['probe', 'listLanguages', 'selectLanguage'];
+  const IMPLEMENTED = ['probe', 'listLanguages', 'addLanguage', 'selectLanguage',
+                       'setDescription', 'countScreenshots', 'deleteOneScreenshot',
+                       'duplicateScreenshots'];
   const PENDING = STEPS.filter((s) => !IMPLEMENTED.includes(s));
 
-  test('the split adds up, so neither list can silently empty out', () => {
-    expect(PENDING.length).toBeGreaterThan(0);
-    expect(PENDING).not.toContain('selectLanguage');
+  // uploadScreenshot is the only one left, and it is left on purpose: a details
+  // page shows two hidden .png inputs for four asset slots, and putting a
+  // screenshot in the logo slot is a bad way to learn which is which.
+  test('only the genuinely ambiguous step is still pending', () => {
+    expect(PENDING).toEqual(['uploadScreenshot']);
   });
 
   test.each(PENDING)('%s refuses instead of returning nothing', async (step) => {
@@ -132,7 +143,8 @@ describe('the Edge driver is honest about being unfinished', () => {
     expect(result).toMatchObject({ ok: false, step: 'not-implemented', store: 'edge' });
     // The refusal has to say what to do next, or a run just stops with no clue.
     expect(result.detail).toMatch(/Probe page/);
-    expect(result.detail).toMatch(/Details for/);
+    // A refusal has to say WHY, not just that it refuses.
+    expect(result.detail.length).toBeGreaterThan(80);
   });
 
   test.each(IMPLEMENTED)('%s is wired to the page, not stubbed', async (step) => {
@@ -196,5 +208,17 @@ describe('the manifest loads every driver', () => {
     const hosts = manifest.host_permissions.join(' ');
     expect(hosts).toContain('chrome.google.com');
     expect(hosts).toContain('partner.microsoft.com');
+  });
+
+  // A real ordering dependency now: stores/edge.js calls languageNames() at
+  // driver level. Loaded in the wrong order it is a ReferenceError on the first
+  // language — in the browser, mid-run, with 42 to go.
+  test('every script a driver depends on loads before it', () => {
+    const loaded = manifest.background.scripts;
+    for (const script of SCRIPTS) {
+      expect(loaded).toContain(script);
+    }
+    expect(loaded.indexOf('lib/locales.js'))
+      .toBeLessThan(loaded.indexOf('stores/edge.js'));
   });
 });
