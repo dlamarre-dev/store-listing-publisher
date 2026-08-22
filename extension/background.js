@@ -168,8 +168,11 @@ function fmtDetail(detail) {
 async function waitForShotCount(driver, tabId, scope, expected, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
-  while (Date.now() < deadline) {
-    await sleep(1000);
+  // Asked before waiting. A driver that verifies its own upload has already got
+  // the count it needs, so sleeping first spent a second per screenshot on a
+  // question that was already answered — 215 of them across 43 locales.
+  for (let first = true; first || Date.now() < deadline; first = false) {
+    if (!first) await sleep(1000);
     const res = await driver.countScreenshots(tabId, scope);
     if (res?.ok) {
       last = res.count;

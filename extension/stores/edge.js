@@ -1347,6 +1347,41 @@ async function pageDuplicateScreenshots() {
 
 const edgeSleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Which upload gesture this store answered last time.
+//
+// The escalation is safe but it is not free: a gesture that will not be taken
+// costs the whole verification window before the next is tried. A real run showed
+// the shape of it — the first screenshot went in on gesture 1, and every one after
+// it on gesture 3, so uploads 2 through 5 each paid for two gestures they were
+// never going to accept. Over 43 locales that is not a rough edge, it is the run.
+//
+// So the order is learned rather than fixed. Remembering costs nothing and cannot
+// break anything: a wrong preference only changes which gesture is tried first,
+// and the rest still follow. Persisted, because the answer is a property of the
+// console rather than of a run — and if the console changes its mind, the first
+// upload of the next run relearns it.
+const GESTURES = [1, 2, 3];
+const GESTURE_KEY = 'edgeUploadGesture';
+let learnedGesture = null;
+
+async function gestureOrder() {
+  if (learnedGesture === null) {
+    try {
+      const stored = await chrome.storage.local.get(GESTURE_KEY);
+      learnedGesture = (stored && stored[GESTURE_KEY]) || 0;
+    } catch (e) { learnedGesture = 0; }
+  }
+  if (!learnedGesture) return GESTURES;
+  return [learnedGesture, ...GESTURES.filter(m => m !== learnedGesture)];
+}
+
+async function rememberGesture(mechanism) {
+  if (mechanism === learnedGesture) return;
+  learnedGesture = mechanism;
+  try { await chrome.storage.local.set({ [GESTURE_KEY]: mechanism }); }
+  catch (e) { /* a session-only preference is still worth having */ }
+}
+
 async function edgeExec(tabId, func, args = []) {
   const results = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN', func, args,
@@ -1496,7 +1531,7 @@ const EdgeDriver = {
     const before = await shots();
     const tried = [];
 
-    for (const mechanism of [1, 2, 3]) {
+    for (const mechanism of await gestureOrder()) {
       const applied = await edgeExec(tabId, pageApplyUpload, [b64, filename, mechanism]);
       tried.push({ mechanism, ok: applied ? applied.ok === true : false,
                    step: applied ? applied.step : 'no-result',
@@ -1512,6 +1547,7 @@ const EdgeDriver = {
         await edgeSleep(750);
         const now = await shots();
         if (now !== null && before !== null && now > before) {
+          await rememberGesture(mechanism);
           return { ok: true, filename, via: mechanism, before, after: now, tried,
                    chose: applied.chose };
         }
@@ -1580,6 +1616,12 @@ const EdgeDriver = {
 //   component's state, and that is still unexplained. The upload therefore
 //   verifies each mechanism against the thumbnail count instead of trusting its
 //   own dispatch, and reports which one worked.
+// - **The gesture this console answers is 3**, observed on a real run: the first
+//   screenshot of an empty slot went in on gesture 1, and every one after it on
+//   gesture 3 — focus / input / change / blur. Gesture 3 dispatches change too, so
+//   it is a superset of gesture 1, which is consistent with it working in both
+//   states. Not hardcoded: the driver remembers what worked and tries that first,
+//   because three rounds of reordering by reasoning is what made that necessary.
 // - **Keep injected functions short.** The verify-and-escalate loop lived in the
 //   page for one round, which made a single injected script run for up to 45
 //   seconds — and a script that outlives a re-render dies with it, its promise
