@@ -1360,74 +1360,74 @@ const edgeSleep = ms => new Promise(r => setTimeout(r, ms));
 // and the rest still follow. Persisted, because the answer is a property of the
 // console rather than of a run — and if the console changes its mind, the first
 // upload of the next run relearns it.
-// Gestures 1 and 3 both assign input.files; gesture 2, a drop, does not. That
-// distinction turned out to matter more than the gestures themselves.
+// Prime, then commit.
 //
-// A five-screenshot run reported 1, 3, 1, 3, 1 — the winner alternating. Reading
-// it back through the learned order: after a success the preference is whatever
-// just worked, that gesture is tried first next time and fails, and the other
-// FILLING gesture takes it. In other words the console swallows the first
-// assignment after a completed upload and honours the second, and which gesture
-// makes it is beside the point.
+// This console swallows the first assignment made to a slot that already holds an
+// image, and honours the second. That was not a theory: a five-screenshot run
+// reported its winners as 1, 3, 1, 3, 1 — alternating, because the previous
+// design remembered whichever gesture had just worked, tried it first, and it
+// failed. Gestures 1 and 3 are the two that assign input.files; the drop does not,
+// and has never been accepted on the real page.
 //
-// Two consequences, and neither is "fill twice". Doing that would be a guess
-// about a slot that appends rather than replaces, and guessing wrong appends a
-// duplicate — the cap is six and we upload five.
+// So both filling gestures are made every time, and only the second one is waited
+// on properly:
 //
-//  - The drop goes LAST. It has never been accepted in any observed run, and
-//    while it sat second it cost a whole window on every upload.
-//  - The window is measured rather than assumed. A gesture that will not be
-//    taken costs the full wait, so what that wait should be is the only number
-//    that matters here — and the runs know it: every success reports how long it
-//    took, the longest is remembered, and the failure window is a multiple of it.
-//    Unknown means the old conservative 30s, so a first run is never rushed.
-const GESTURES = [1, 3, 2];
-const GESTURE_KEY = 'edgeUploadGesture';
+//   1. fill and dispatch. Wait a SHORT probe — an empty slot takes this one, and
+//      the observed latency when it does is under a second.
+//   2. fill and dispatch again. Wait the LONG window. This is the one a non-empty
+//      slot takes.
+//   3. only if neither landed, the drop, as a fallback that has never been needed.
+//
+// The probe is what keeps this from uploading twice. Doing both fills back to
+// back — the obvious reading of "it honours the second" — would append a
+// duplicate whenever the first was in fact honoured, and this slot appends rather
+// than replaces: the cap is six and we upload five. Waiting first means the second
+// fill only happens once the first has demonstrably done nothing.
+//
+// The learned-gesture preference that used to live here is gone. It was built on
+// the idea that one gesture works and the others do not, which is not what this
+// page does — and remembering the last winner is actively wrong when the winner
+// alternates. What is still worth learning is how long an honoured fill takes to
+// show, because that is what sizes the probe.
+const FILL_GESTURES = [1, 3];
+const DROP_GESTURE = 2;
 const LATENCY_KEY = 'edgeUploadLatencyMs';
-const POLL_MS = 750;
-const WINDOW_MIN_MS = 6000;
-const WINDOW_MAX_MS = 30000;
-let learnedGesture = null;
+const POLL_MS = 500;
+const LONG_WINDOW_MS = 30000;
+const PROBE_MIN_MS = 3000;
+const PROBE_MAX_MS = 10000;
 let learnedLatency = null;
 
-async function loadLearned() {
-  if (learnedGesture !== null) return;
-  learnedGesture = 0;
+async function loadLatency() {
+  if (learnedLatency !== null) return;
   learnedLatency = 0;
   try {
-    const stored = await chrome.storage.local.get([GESTURE_KEY, LATENCY_KEY]);
-    learnedGesture = (stored && stored[GESTURE_KEY]) || 0;
+    const stored = await chrome.storage.local.get(LATENCY_KEY);
     learnedLatency = (stored && stored[LATENCY_KEY]) || 0;
-  } catch (e) { /* session-only is still worth having */ }
+  } catch (e) { /* a session-only measurement is still worth having */ }
 }
 
-async function gestureOrder() {
-  await loadLearned();
-  if (!learnedGesture) return GESTURES;
-  return [learnedGesture, ...GESTURES.filter(m => m !== learnedGesture)];
-}
-
-// How long to wait on a gesture before trying the next.
+// How long to wait on the FIRST fill before deciding it was swallowed.
 //
-// Four times the slowest success ever seen, floored at 6s so a fast console does
-// not make the check flaky, and capped at 30s so a slow one cannot make a
-// 43-locale run unbounded.
-async function gestureWindowMs() {
-  await loadLearned();
-  if (!learnedLatency) return WINDOW_MAX_MS;
-  return Math.min(WINDOW_MAX_MS, Math.max(WINDOW_MIN_MS, learnedLatency * 4));
+// Four times the slowest first-fill success ever seen. Only first-fill successes
+// count: the latency of a success that needed two fills includes the swallowed
+// one, so feeding it back here would inflate the probe with a number that answers
+// a different question.
+//
+// Floored at 3s so a fast console cannot make the probe flaky, and capped at 10s
+// because past that the probe costs more than the escalation it is avoiding.
+async function probeWindowMs() {
+  await loadLatency();
+  if (!learnedLatency) return PROBE_MIN_MS;
+  return Math.min(PROBE_MAX_MS, Math.max(PROBE_MIN_MS, learnedLatency * 4));
 }
 
-async function rememberGesture(mechanism, latencyMs) {
-  const nextGesture = mechanism;
-  const nextLatency = Math.max(learnedLatency || 0, latencyMs || 0);
-  if (nextGesture === learnedGesture && nextLatency === learnedLatency) return;
-  learnedGesture = nextGesture;
-  learnedLatency = nextLatency;
-  try {
-    await chrome.storage.local.set({ [GESTURE_KEY]: nextGesture,
-                                     [LATENCY_KEY]: nextLatency });
-  } catch (e) { /* as above */ }
+async function rememberLatency(ms) {
+  await loadLatency();
+  if (!ms || ms <= learnedLatency) return;
+  learnedLatency = ms;
+  try { await chrome.storage.local.set({ [LATENCY_KEY]: ms }); }
+  catch (e) { /* as above */ }
 }
 
 async function edgeExec(tabId, func, args = []) {
@@ -1579,29 +1579,57 @@ const EdgeDriver = {
     const before = await shots();
     const tried = [];
 
-    for (const mechanism of await gestureOrder()) {
+    // Returns how long it took for the count to rise, or 0.
+    const waitFor = async (windowMs) => {
+      const polls = Math.ceil(windowMs / POLL_MS);
+      for (let i = 1; i <= polls; i += 1) {
+        await edgeSleep(POLL_MS);
+        const now = await shots();
+        if (now !== null && before !== null && now > before) return i * POLL_MS;
+      }
+      return 0;
+    };
+
+    const probeMs = await probeWindowMs();
+    const order = [...FILL_GESTURES, DROP_GESTURE];
+
+    for (let n = 0; n < order.length; n += 1) {
+      const mechanism = order[n];
       const applied = await edgeExec(tabId, pageApplyUpload, [b64, filename, mechanism]);
       tried.push({ mechanism, ok: applied ? applied.ok === true : false,
                    step: applied ? applied.step : 'no-result',
                    chose: applied ? applied.chose : null });
-      // A refusal that is about the page rather than the gesture — no slot, no
-      // input — will not be fixed by making a different gesture at it.
-      if (applied && applied.ok !== true) {
-        return { ...applied, tried, before };
-      }
+      // A refusal about the page rather than the gesture — no slot, no input —
+      // will not be fixed by making a different gesture at it.
+      if (applied && applied.ok !== true) return { ...applied, tried, before };
       if (!applied) continue;
 
-      const polls = Math.ceil(await gestureWindowMs() / POLL_MS);
-      for (let i = 1; i <= polls; i += 1) {
-        await edgeSleep(POLL_MS);
-        const now = await shots();
-        if (now !== null && before !== null && now > before) {
-          const tookMs = i * POLL_MS;
-          await rememberGesture(mechanism, tookMs);
-          return { ok: true, filename, via: mechanism, before, after: now, tried,
-                   chose: applied.chose, tookMs };
-        }
+      // Only the first fill gets the short probe. It is there to catch the empty
+      // slot cheaply and to prove the fill was swallowed before another is made;
+      // everything after it is given the full window, because by then there is
+      // nothing left to escalate to in a hurry.
+      const isFirstFill = n === 0;
+      const tookMs = await waitFor(isFirstFill ? probeMs : LONG_WINDOW_MS);
+      if (!tookMs) continue;
+
+      const after = await shots();
+      // Two files where one was expected. This slot appends, so a duplicate is
+      // not self-correcting: five screenshots plus one duplicate is the cap, and
+      // the next upload would fail for a reason that has nothing to do with it.
+      // Better to stop here, where it is attributable.
+      if (after !== null && before !== null && after > before + 1) {
+        return {
+          ok: false,
+          step: 'upload-duplicated',
+          filename, before, after, tried, via: mechanism,
+          detail: 'The count rose by more than one, so the file went in twice. '
+            + 'This slot appends rather than replaces and its cap is six, so a '
+            + 'duplicate has to be removed by hand before the run continues.',
+        };
       }
+      if (isFirstFill) await rememberLatency(tookMs);
+      return { ok: true, filename, via: mechanism, before, after, tried,
+               chose: applied.chose, tookMs };
     }
 
     return {
@@ -1611,10 +1639,10 @@ const EdgeDriver = {
       before,
       after: await shots(),
       tried,
-      detail: 'The file was put into the slot and the page did not take it. Three '
-        + 'gestures were tried — a picker change, a drop on the card, and a '
-        + 'focus/change/blur sequence — each verified against the thumbnail count '
-        + 'before the next was attempted. The count did not move for any of them.',
+      detail: 'The file was put into the slot twice and dropped on it once, and '
+        + 'the page took none of them. Each attempt was verified against the '
+        + 'thumbnail count before the next: the first fill against a short probe, '
+        + 'the rest against the full window.',
     };
   },
 };
@@ -1672,10 +1700,17 @@ const EdgeDriver = {
 //   Gestures 1 and 3 are the two that assign input.files; gesture 2, a drop, does
 //   not, and has never been accepted. So an upload into a non-empty slot needs two
 //   filling attempts, and which gesture makes them is beside the point.
-//   Deliberately NOT "fill twice in one gesture": this slot appends rather than
-//   replaces, so a wrong guess there appends a duplicate — the cap is six and we
-//   upload five. The drop moved last instead, and the wait before escalating is
-//   measured from real successes rather than assumed.
+//   So both fills are made every time, and only the second is waited on properly:
+//   fill, probe briefly, fill again, wait the full window, and only then the drop.
+//   The probe is what keeps this from uploading twice — this slot appends rather
+//   than replaces, so a second fill made while the first was merely slow would
+//   append a duplicate, and the cap is six against the five we send.
+//   One number matters and it is easy to get wrong: the probe must be sized from
+//   FIRST-fill successes only. A success that needed two fills is slower by
+//   construction, and sizing the probe from it makes every later upload wait out
+//   the very fill it is trying to rule out quickly. Sizing it from a 0.8s best
+//   case is the mirror of that mistake, and it made a run fail after one
+//   screenshot.
 // - **Keep injected functions short.** The verify-and-escalate loop lived in the
 //   page for one round, which made a single injected script run for up to 45
 //   seconds — and a script that outlives a re-render dies with it, its promise
