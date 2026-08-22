@@ -2,10 +2,16 @@
   "manifest_version": 3,
   "name": "Store Listing Publisher",
   "version": "1.0",
-  "description": "Operator tool: fills the Chrome Web Store listing draft (localized descriptions + screenshots) from local marketing assets. Load via about:debugging in Firefox.",
-  "permissions": ["tabs", "scripting", "storage", "nativeMessaging"],
+  "description": "Operator tool: fills a store-listing draft (localized descriptions + screenshots) from local marketing assets, on stores that have no API for it. Load via about:debugging in Firefox.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "nativeMessaging"
+  ],
   "host_permissions": [
-    "*://chrome.google.com/webstore/devconsole/*"
+    "*://chrome.google.com/webstore/devconsole/*",
+    "*://partner.microsoft.com/*"
   ],
   "background": {
     "scripts": [
@@ -13,6 +19,7 @@
       "lib/locales.js",
       "lib/paths.js",
       "stores/cws.js",
+      "stores/edge.js",
       "background.js"
     ]
   },
