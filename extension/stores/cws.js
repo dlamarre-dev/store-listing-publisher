@@ -365,6 +365,11 @@ const CwsDriver = {
 
   isLoginUrl: url => CWS.LOGIN_RE.test(url),
 
+  // Whether a tab belongs to this store, so a probe can reuse a page already
+  // open instead of navigating away from it. Deliberately narrow: it must never
+  // match a page this driver has no business injecting into.
+  ownsUrl: url => /^https?:\/\/chrome\.google\.com\/webstore\/devconsole\//.test(url),
+
   probe: tabId => cwsExec(tabId, pageProbe),
   selectLanguage: (tabId, locale) =>
     cwsExec(tabId, pageSelectLanguage, [{ code: locale.cws, names: languageNames(locale) }]),
