@@ -1080,29 +1080,38 @@ async function pageDeleteOneScreenshot() {
   return { ok: true, before, after, confirmed };
 }
 
-// Puts one PNG into the screenshot slot's file input.
+// Puts one PNG into the screenshot slot, and does not claim success until the
+// page shows it.
 //
-// The input is hidden and stays hidden — clicking the visible "Add Image" button
-// would open the OS file picker, which no script can fill. Assigning a File
-// through DataTransfer and dispatching change is what a real drop does, and it is
-// the same mechanism the Chrome Web Store driver uses.
-function pageUploadScreenshot(b64, filename) {
-  const root = (() => {
-    const direct = document.querySelector('screenshots');
-    if (direct) return direct;
-    const deep = (r, out) => {
-      for (const el of r.querySelectorAll('*')) {
-        out.push(el);
-        if (el.shadowRoot) deep(el.shadowRoot, out);
-      }
-      return out;
-    };
-    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
-  })();
+// The slot has ONE file input, shared, sitting directly under <screenshots> — the
+// diagnostic settled that, and it also settled that the earlier theories were
+// wrong: there is no per-image replacement uploader to pick between, and the
+// input holds nothing afterwards. The first upload works and the second does not,
+// with the same input, the same code and a valid file (1280x800, the size the
+// card asks for). So what differs is the component's state, not our choice of
+// element.
+//
+// Which is why this stopped guessing and started checking. Each mechanism is
+// applied and then VERIFIED against the thumbnail count before the next is tried,
+// and the function reports which one worked. A guess that reports success without
+// looking is what turned three separate causes into three separate round trips.
+//
+// The visible "Add Image" affordance is never clicked: it opens the OS file
+// picker, which no script can fill.
+async function pageUploadScreenshot(b64, filename) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const deepAll = (root, out) => {
+    out = out || [];
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const root = document.querySelector('screenshots')
+    || deepAll(document).find(el => el.tagName === 'SCREENSHOTS') || null;
 
   if (!root) {
-    // Reported with the chains, because that is the one thing that separates the
-    // four slots and the only useful thing to look at if this ever moves.
     const chain = el => {
       const out = [];
       let p = el;
@@ -1121,39 +1130,26 @@ function pageUploadScreenshot(b64, filename) {
     };
   }
 
-  // Which input, of possibly several.
-  //
-  // A slot with images in it carries one uploader PER IMAGE — that is the
-  // "replace this one" affordance — plus the empty "Add Image" uploader at the
-  // end. Taking the first therefore replaces image 1 instead of adding image 2,
-  // which is exactly what happened: the second upload reported success and the
-  // count stayed at 1 until the run timed out waiting for 2.
-  //
-  // It also corrects a note this driver made from the first dump. The logo slot
-  // was full and still exposed an input; the conclusion drawn then — that a
-  // filled slot exposes none — had the fact backwards.
-  const inputs = Array.from(root.querySelectorAll('input[type="file"]'));
-  if (!inputs.length) {
-    return { ok: false, step: 'no-screenshot-file-input',
-             detail: 'The <screenshots> element has no file input at all. It may '
-               + 'already hold the maximum of six images.' };
-  }
+  const visible = el => {
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
+  };
+  // The same count the caller polls, so "it worked" here means the same thing
+  // there. Thumbnails, not file inputs: the thumbnail is what a screenshot is on
+  // this page, and its alt carries the filename.
+  const count = () => deepAll(root).filter(el => el.tagName === 'IMG')
+    .filter(visible).filter(i => i.clientWidth >= 40).length;
+
   // The card each uploader belongs to: the outermost element under the slot that
-  // contains it. A replacement uploader shares its card with the thumbnail it
-  // would replace; the add uploader's card has no image in it. That is a fact
-  // about the structure, where the caption was a fact about the wording — and the
-  // wording moved once the slot stopped being empty.
+  // contains it. With a shared input there is only ever one, but a slot that
+  // grows a replacement uploader per image would still be handled — a
+  // replacement's card holds the thumbnail it would replace, the add uploader's
+  // card holds none.
   const card = el => {
     let p = el;
     while (p.parentElement && p.parentElement !== root) p = p.parentElement;
     return p;
   };
-  const hasThumbnail = el => Array.from(card(el).querySelectorAll('img'))
-    .some(i => i.clientWidth >= 40 || !i.clientWidth);
-
-  // Stops at the slot itself. Climbing past it reaches <screenshots>, whose text
-  // contains every caption in the slot — including "Add Image" — so every input
-  // would look like the add one, replacements included.
   const nearestLabel = el => {
     let p = el.parentElement;
     for (let i = 0; i < 6 && p && p !== root; i += 1) {
@@ -1163,39 +1159,111 @@ function pageUploadScreenshot(b64, filename) {
     }
     return '';
   };
-
-  // Structure first, caption second, position last. Getting this wrong does not
-  // fail loudly: filling a replacement uploader replaces screenshot 1 with
-  // screenshot 2, the upload reports success, and the run times out waiting for a
-  // count that will never move.
-  const empty = inputs.filter(i => !hasThumbnail(i));
-  const byLabel = empty.find(i => /add\s*image/i.test(nearestLabel(i)));
-  // Last among the thumbnail-less ones, not first: the add uploader is rendered
-  // after the replacements, and with nothing to read that ordering is all there
-  // is to go on.
-  const input = byLabel || empty[empty.length - 1] || inputs[inputs.length - 1];
-  const chose = byLabel ? 'add-image' : (empty.length ? 'no-thumbnail' : 'last');
+  const pick = () => {
+    const inputs = deepAll(root)
+      .filter(el => el.tagName === 'INPUT' && (el.getAttribute('type') || '') === 'file');
+    if (!inputs.length) return null;
+    const empty = inputs.filter(i => !Array.from(card(i).querySelectorAll('img'))
+      .some(img => img.clientWidth >= 40));
+    return empty.find(i => /add\s*image/i.test(nearestLabel(i)))
+      || empty[empty.length - 1]
+      || inputs[inputs.length - 1];
+  };
 
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  const file = new File([bytes], filename, { type: 'image/png' });
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  // Cleared first, the way a real re-selection leaves it. An uploader that reads
-  // files[0] and then resets its input sees no change when the same element is
-  // assigned again while still holding the previous file — and the second upload
-  // is exactly where this run stops.
-  try { input.value = ''; } catch (e) { /* some inputs refuse; assigning still works */ }
-  input.files = dt.files;
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
-  // Which one was filled, and out of how many: when an upload reports success and
-  // the count does not move, this is the line that says why.
+  const makeFile = () => new File([bytes], filename, { type: 'image/png' });
+  const transfer = () => {
+    const dt = new DataTransfer();
+    dt.items.add(makeFile());
+    return dt;
+  };
+
+  const before = count();
+
+  // Re-picked before each attempt: the component may replace its own input
+  // between them, and holding a detached element is how an attempt fails without
+  // anything to show for it.
+  const fill = () => {
+    const input = pick();
+    if (!input) return null;
+    // Cleared first, the way a real re-selection leaves it. An uploader that
+    // reads files[0] and resets its input sees no change when the same element is
+    // assigned again while still holding the previous file.
+    try { input.value = ''; } catch (e) { /* some inputs refuse; assigning still works */ }
+    input.files = transfer().files;
+    return input;
+  };
+
+  const MECHANISMS = [
+    // 1. What a file picker does. This is the one that works on an empty slot.
+    () => {
+      const input = fill();
+      if (!input) return false;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    },
+    // 2. What a drag and drop does. The card announces its accepted file types,
+    //    so it is a drop zone as well as a picker, and a component can listen for
+    //    one without listening for the other.
+    () => {
+      const input = pick();
+      const zone = input ? card(input) : root;
+      const dt = transfer();
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        let ev;
+        try {
+          ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+        } catch (e) {
+          ev = new Event(type, { bubbles: true, cancelable: true });
+          Object.defineProperty(ev, 'dataTransfer', { value: dt });
+        }
+        zone.dispatchEvent(ev);
+      }
+      return true;
+    },
+    // 3. What a person does. Some forms commit on blur rather than on change, and
+    //    a component that tracks focus will not have seen any of the above.
+    () => {
+      const input = fill();
+      if (!input) return false;
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      return true;
+    },
+  ];
+
+  const tried = [];
+  for (let m = 0; m < MECHANISMS.length; m += 1) {
+    if (!MECHANISMS[m]()) {
+      tried.push({ mechanism: m + 1, applied: false });
+      continue;
+    }
+    tried.push({ mechanism: m + 1, applied: true });
+    // Verified before escalating, so a mechanism that merely takes its time is
+    // not overtaken by the next one and the same file uploaded twice.
+    for (let i = 0; i < 30; i += 1) {
+      await sleep(500);
+      if (count() > before) {
+        return { ok: true, filename, size: bytes.length, via: m + 1, tried,
+                 before, after: count() };
+      }
+    }
+  }
+
   return {
-    ok: true,
+    ok: false,
+    step: 'upload-not-accepted',
     filename,
-    size: bytes.length,
-    inputs: inputs.length,
-    chose,
+    before,
+    after: count(),
+    tried,
+    detail: 'The file was put into the slot\'s input and the page did not take it. '
+      + 'Three mechanisms were tried — a picker change, a drop on the card, and a '
+      + 'focus/change/blur sequence — each verified against the thumbnail count '
+      + 'before the next. The count did not move for any of them.',
   };
 }
 
@@ -1506,7 +1574,17 @@ const EdgeDriver = {
 //
 //   Every screenshot step is scoped to <screenshots> for this reason, and refuses
 //   when it is absent.
-// - **A slot carries one uploader per image, plus one to add with.** The logo slot
+// - **The slot has ONE shared file input**, directly under <screenshots>, and it
+//   holds nothing after an upload. Settled by a describeAssets dump taken at the
+//   moment of failure, which also ruled out every theory about picking the wrong
+//   element. The first upload is accepted and the second is not, with the same
+//   input, the same code and a valid 1280x800 file — so what differs is the
+//   component's state, and that is still unexplained. The upload therefore
+//   verifies each mechanism against the thumbnail count instead of trusting its
+//   own dispatch, and reports which one worked.
+// - The card's own text gives the accepted sizes as **1280 x 800 or 640 x 400** —
+//   not 640x480, as a note here once said. Ours are 1280x800.
+// - **A slot MIGHT carry one uploader per image, plus one to add with.** The logo slot
 //   was full in that dump and still exposed an input — the replace affordance —
 //   so the conclusion drawn at the time, that a filled slot exposes none, had the
 //   fact backwards. It cost a run: taking the first input in the slot replaced
