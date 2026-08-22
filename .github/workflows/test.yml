@@ -17,6 +17,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # background.js has no exports, so its tests evaluate it in a vm. Worth
+      # naming here because a syntax error there fails as a jest suite, not as a
+      # lint, and the message points at the vm rather than the file.
 
   python:
     runs-on: ubuntu-latest

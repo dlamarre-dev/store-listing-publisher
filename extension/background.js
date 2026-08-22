@@ -213,8 +213,18 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
 // rest, so re-running after an abort resumes rather than duplicating — which
 // matters for a pass that is 42 steps long the first time and zero steps long
 // every time after.
+//
+// RETURNS THE LOCALES THAT HAVE A PAGE, which the caller must walk instead of the
+// list it came in with. Two ways that set is smaller, and both used to abort the
+// run instead:
+//
+//   - a dry run adds nothing, so an unenrolled locale still has no page and
+//     cannot be inspected. Walking it failed on the first one, which made the dry
+//     run useless on exactly the fresh product it was meant to preview.
+//   - a language the store does not offer is skipped here, and walking it later
+//     failed anyway — after every other language had been written.
 async function enrolLocales(driver, tabId, locales, listingUrl, opts, onProgress) {
-  if (typeof driver.addLanguage !== 'function') return;
+  if (typeof driver.addLanguage !== 'function') return locales;
 
   const listed = await driver.listLanguages(tabId);
   if (!listed?.ok) {
@@ -226,13 +236,16 @@ async function enrolLocales(driver, tabId, locales, listingUrl, opts, onProgress
   onProgress(`Languages on the listing: ${present.length} (${present.join(', ')})`);
   if (!missing.length) {
     onProgress('Nothing to add — every locale in this run already has a page.');
-    return;
+    return locales;
   }
 
   if (opts.dryRun) {
-    onProgress(`Would add ${missing.length}: `
-      + missing.map(l => l.internal).join(', '));
-    return;
+    const enrolled = locales.filter(l => !missing.includes(l));
+    onProgress(`Would add ${missing.length}: ${missing.map(l => l.internal).join(', ')}`);
+    onProgress(`Dry run adds nothing, so only the ${enrolled.length} locale(s) that `
+      + 'already have a page can be inspected below. Re-run without Dry run to add '
+      + 'the rest first.');
+    return enrolled;
   }
 
   onProgress(`Adding ${missing.length} language(s)…`);
@@ -278,6 +291,14 @@ async function enrolLocales(driver, tabId, locales, listingUrl, opts, onProgress
   await chrome.tabs.update(tabId, { url: listingUrl });
   await waitForTabComplete(tabId);
   await sleep(SETTLE_PAGE_MS);
+
+  // A locale the store refused has no page, so it must not be walked. Dropping it
+  // here rather than letting selectLanguage fail is the difference between one
+  // reported skip and an abort after everything else was already written.
+  if (notOffered.length) {
+    return locales.filter(l => !notOffered.includes(l.internal));
+  }
+  return locales;
 }
 
 // ── per-locale step ───────────────────────────────────────────────────────────
@@ -412,10 +433,17 @@ async function runPublish(rawConfig, opts, onProgress) {
   if (walkLocales) {
     // Before writing anything: on a store that requires it, make sure every
     // locale in this run actually has a page to write to. A no-op elsewhere.
-    await enrolLocales(driver, tab.id, locales, driver.listingUrl(config, item),
-                       opts, onProgress);
+    //
+    // Walk what it hands back, not `locales`. It can be a shorter list — a dry
+    // run adds nothing, and a store can refuse a language outright — and walking
+    // a locale with no page is an abort, not a skip.
+    const walkable = await enrolLocales(
+      driver, tab.id, locales, driver.listingUrl(config, item), opts, onProgress);
+    if (walkable.length !== locales.length) {
+      onProgress(`Walking ${walkable.length} of ${locales.length} locale(s).`);
+    }
 
-    for (const locale of locales) {
+    for (const locale of walkable) {
       try {
         await publishLocale(driver, tab.id, locale, texts[locale.internal], opts, ctx, onProgress);
       } catch (e) {
