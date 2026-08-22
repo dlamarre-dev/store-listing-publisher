@@ -149,6 +149,27 @@ function pageProbe() {
     }
     return out;
   };
+  // Text as a reader sees it, with <slot> resolved to what is slotted into it.
+  //
+  // Partner Center's command bar is a web component: <v6_he-button>Save draft</v6_he-button>
+  // renders a real <button> inside its shadow root and slots the label in from the
+  // light DOM. textContent then finds the label on neither side — the shadow button
+  // holds a <slot>, not the words — which is how a visible, documented control ended
+  // up among the nineteen with no name.
+  const slotText = (node, depth) => {
+    if ((depth || 0) > 8) return '';
+    if (node.nodeType === 3) return node.nodeValue || '';
+    if (node.nodeType !== 1) return '';
+    if (node.tagName === 'SLOT') {
+      return (node.assignedNodes ? node.assignedNodes() : [])
+        .map(n => slotText(n, (depth || 0) + 1)).join(' ');
+    }
+    let out = '';
+    for (const child of node.childNodes) out += ' ' + slotText(child, (depth || 0) + 1);
+    return out;
+  };
+  const ownText = el => slotText(el, 0).replace(/\s+/g, ' ').trim().slice(0, 200);
+
   const accName = el => {
     const by = el.getAttribute('aria-labelledby');
     const referenced = by && by.split(/\s+/)
@@ -157,7 +178,7 @@ function pageProbe() {
     return (el.getAttribute('aria-label')
       || referenced
       || el.getAttribute('title')
-      || txt(el)
+      || ownText(el)
       || el.value
       || (alt && (alt.getAttribute('alt') || txt(alt)))
       || '').replace(/\s+/g, ' ').trim();
@@ -168,6 +189,10 @@ function pageProbe() {
     if (el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type)) return true;
     if (['button', 'menuitem', 'menuitemcheckbox', 'link', 'tab'].includes(role)) return true;
     if (el.hasAttribute('onclick')) return true;
+    // A custom element whose shadow root holds a real control: the host is what
+    // carries the label, and it is what the page treats as the button.
+    if (el.tagName.includes('-') && el.shadowRoot
+        && el.shadowRoot.querySelector('button, [role="button"], a, input')) return true;
     return el.hasAttribute('tabindex')
       && !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
   };
@@ -273,6 +298,27 @@ async function pageSaveDraft() {
   // button with an icon carries its label in `title`, or points at one with
   // `aria-labelledby`; both were unreadable here, so such a control was found,
   // given an empty name, and then dropped by the very filter meant to describe it.
+  // Text as a reader sees it, with <slot> resolved to what is slotted into it.
+  //
+  // Partner Center's command bar is a web component: <v6_he-button>Save draft</v6_he-button>
+  // renders a real <button> inside its shadow root and slots the label in from the
+  // light DOM. textContent then finds the label on neither side — the shadow button
+  // holds a <slot>, not the words — which is how a visible, documented control ended
+  // up among the nineteen with no name.
+  const slotText = (node, depth) => {
+    if ((depth || 0) > 8) return '';
+    if (node.nodeType === 3) return node.nodeValue || '';
+    if (node.nodeType !== 1) return '';
+    if (node.tagName === 'SLOT') {
+      return (node.assignedNodes ? node.assignedNodes() : [])
+        .map(n => slotText(n, (depth || 0) + 1)).join(' ');
+    }
+    let out = '';
+    for (const child of node.childNodes) out += ' ' + slotText(child, (depth || 0) + 1);
+    return out;
+  };
+  const ownText = el => slotText(el, 0).replace(/\s+/g, ' ').trim().slice(0, 200);
+
   const accName = el => {
     const by = el.getAttribute('aria-labelledby');
     const referenced = by && by.split(/\s+/)
@@ -281,7 +327,7 @@ async function pageSaveDraft() {
     return (el.getAttribute('aria-label')
       || referenced
       || el.getAttribute('title')
-      || txt(el)
+      || ownText(el)
       || el.value
       || (alt && (alt.getAttribute('alt') || txt(alt)))
       || '').replace(/\s+/g, ' ').trim();
@@ -296,6 +342,10 @@ async function pageSaveDraft() {
     if (el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type)) return true;
     if (['button', 'menuitem', 'menuitemcheckbox', 'link', 'tab'].includes(role)) return true;
     if (el.hasAttribute('onclick')) return true;
+    // A custom element whose shadow root holds a real control: the host is what
+    // carries the label, and it is what the page treats as the button.
+    if (el.tagName.includes('-') && el.shadowRoot
+        && el.shadowRoot.querySelector('button, [role="button"], a, input')) return true;
     return el.hasAttribute('tabindex')
       && !['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
   };
@@ -384,14 +434,23 @@ async function pageSaveDraft() {
     };
   }
 
+  // The name lives on the host, the click handler usually on the control inside
+  // it. Clicking the host alone would dispatch an event the component never
+  // listens for — a save that silently does nothing is the exact failure this
+  // whole step exists to prevent.
+  const inner = hit.el.shadowRoot
+    && hit.el.shadowRoot.querySelector('button, [role="button"], a, input');
+  const press = inner || hit.el;
+
   const label = hit.name;
-  if (hit.el.disabled || hit.el.getAttribute('aria-disabled') === 'true') {
+  const off = el => !!(el.disabled || el.getAttribute('aria-disabled') === 'true');
+  if (off(hit.el) || off(press)) {
     // Partner Center greys Save out when nothing changed. That is a success, not
     // a failure: it means the field already held what we were about to write.
     return { ok: true, step: 'nothing-to-save', label };
   }
 
-  hit.el.click();
+  press.click();
   await sleep(2500);
   return { ok: true, step: 'saved', label };
 }
