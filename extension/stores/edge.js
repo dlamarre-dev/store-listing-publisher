@@ -60,87 +60,6 @@ function pageProbe() {
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
-  const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
-    .filter(visible).filter(h => { const t = txt(h); return t && t.length < 80; });
-  const trail = el => headings
-    .filter(h => h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)
-    .map(txt);
-
-  const textareas = Array.from(document.querySelectorAll('textarea')).map(ta => ({
-    visible: visible(ta),
-    ariaLabel: ta.getAttribute('aria-label'),
-    id: ta.id || null,
-    maxLength: ta.getAttribute('maxlength'),
-    size: `${ta.clientWidth}x${ta.clientHeight}`,
-    valueStart: (ta.value || '').slice(0, 60),
-    valueLength: (ta.value || '').length,
-    trail: trail(ta).slice(-3),
-  }));
-
-  // Partner Center's description box may well be a rich-text editor rather than
-  // a <textarea>, which would change the write path entirely — so look for one.
-  const editables = Array.from(document.querySelectorAll('[contenteditable="true"]'))
-    .filter(visible)
-    .map(el => ({
-      role: el.getAttribute('role'),
-      ariaLabel: el.getAttribute('aria-label'),
-      size: `${el.clientWidth}x${el.clientHeight}`,
-      textStart: txt(el).slice(0, 60),
-      trail: trail(el).slice(-3),
-    }));
-
-  const inputs = Array.from(document.querySelectorAll('input')).filter(visible).map(inp => ({
-    type: inp.type,
-    ariaLabel: inp.getAttribute('aria-label'),
-    placeholder: inp.getAttribute('placeholder'),
-    id: inp.id || null,
-    trail: trail(inp).slice(-2),
-  })).slice(0, 40);
-
-  const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')).map(inp => ({
-    accept: inp.getAttribute('accept'),
-    multiple: inp.multiple,
-    hidden: !visible(inp),
-    trail: trail(inp).slice(-3),
-  }));
-
-  // The language table: how many rows, what each row says, and what its buttons
-  // are called. This is the thing the CWS has no equivalent of.
-  const tables = Array.from(document.querySelectorAll('table, [role="grid"], [role="table"]'))
-    .filter(visible)
-    .map(t => {
-      const rows = Array.from(t.querySelectorAll('tr, [role="row"]'));
-      return {
-        rowCount: rows.length,
-        headerCells: Array.from(t.querySelectorAll('th, [role="columnheader"]')).map(txt),
-        firstRows: rows.slice(0, 4).map(r => ({
-          cells: Array.from(r.querySelectorAll('td, th, [role="cell"], [role="gridcell"]'))
-            .map(c => txt(c).slice(0, 40)),
-          buttons: Array.from(r.querySelectorAll('button, [role="button"], a'))
-            .map(b => (b.getAttribute('aria-label') || txt(b)).slice(0, 40))
-            .filter(Boolean),
-        })),
-        trail: trail(t).slice(-2),
-      };
-    });
-
-  // Anchors, so the real URL of the Store listings page and of a per-language
-  // page can be read off the nav instead of guessed.
-  const links = Array.from(document.querySelectorAll('a[href]'))
-    .filter(visible)
-    .map(a => ({ text: txt(a).slice(0, 40), href: a.getAttribute('href') }))
-    .filter(l => l.href && !l.href.startsWith('#'))
-    .filter(l => /microsoftedge|listing|package|availability|propert|privacy/i
-      .test(l.href + ' ' + l.text))
-    .slice(0, 50);
-
-  // Anything clickable, by affordance rather than by tag, shadow roots included.
-  //
-  // Two rounds of narrower queries each missed a control this page really has, so
-  // the probe now matches what pageSaveDraft matches: a div with a click handler
-  // is a button as far as the operator is concerned, and an icon-only command bar
-  // button carries its label in `title` or `aria-labelledby`, neither of which the
-  // old `aria-label || textContent` could read.
   const deepAll = (root, out) => {
     out = out || [];
     for (const el of root.querySelectorAll('*')) {
@@ -198,6 +117,141 @@ function pageProbe() {
   };
 
   const everything = deepAll(document);
+
+  // The outermost host of whatever tree an element lives in.
+  //
+  // compareDocumentPosition across a shadow boundary reports DISCONNECTED, so a
+  // heading trail computed on a shadow node is meaningless. Comparing the host
+  // instead puts the element back on the page's own axis, which is the thing the
+  // trail is actually about: what section of the page is this in.
+  const inDoc = el => {
+    let p = el;
+    while (p && p.getRootNode() !== document && p.getRootNode().host) p = p.getRootNode().host;
+    return p || el;
+  };
+
+  // The chain up to the page, crossing shadow boundaries. This is what tells four
+  // asset slots apart when their file inputs look identical.
+  const chain = el => {
+    const out = [];
+    let p = el;
+    for (let i = 0; i < 8 && p; i += 1) {
+      const cls = (typeof p.className === 'string' ? p.className : '')
+        .trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+      out.push(p.tagName + (cls ? '.' + cls : ''));
+      p = p.parentElement || (p.getRootNode() && p.getRootNode().host) || null;
+    }
+    return out.join(' < ');
+  };
+
+  // The nearest ancestor that reads as a caption: the words next to the control.
+  const nearestLabel = el => {
+    let p = el.parentElement || (el.getRootNode() && el.getRootNode().host);
+    for (let i = 0; i < 6 && p; i += 1) {
+      const t = ownText(p);
+      if (t && t.length < 120) return t;
+      p = p.parentElement || (p.getRootNode() && p.getRootNode().host) || null;
+    }
+    return null;
+  };
+
+  const HEADING = el => /^H[1-6]$/.test(el.tagName)
+    || (el.getAttribute('role') || '') === 'heading';
+  const headings = everything.filter(HEADING)
+    .filter(visible).filter(h => { const t = ownText(h); return t && t.length < 80; });
+  const trail = el => headings
+    .filter(h => inDoc(h).compareDocumentPosition(inDoc(el)) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .map(ownText);
+
+  const textareas = everything.filter(el => el.tagName === 'TEXTAREA').map(ta => ({
+    visible: visible(ta),
+    ariaLabel: ta.getAttribute('aria-label'),
+    id: ta.id || null,
+    maxLength: ta.getAttribute('maxlength'),
+    size: `${ta.clientWidth}x${ta.clientHeight}`,
+    valueStart: (ta.value || '').slice(0, 60),
+    valueLength: (ta.value || '').length,
+    trail: trail(ta).slice(-3),
+  }));
+
+  // Partner Center's description box may well be a rich-text editor rather than
+  // a <textarea>, which would change the write path entirely — so look for one.
+  const editables = everything.filter(el => el.getAttribute('contenteditable') === 'true')
+    .filter(visible)
+    .map(el => ({
+      role: el.getAttribute('role'),
+      ariaLabel: el.getAttribute('aria-label'),
+      size: `${el.clientWidth}x${el.clientHeight}`,
+      textStart: txt(el).slice(0, 60),
+      trail: trail(el).slice(-3),
+    }));
+
+  const inputs = everything.filter(el => el.tagName === 'INPUT')
+    .filter(visible).map(inp => ({
+    type: inp.type,
+    ariaLabel: inp.getAttribute('aria-label'),
+    placeholder: inp.getAttribute('placeholder'),
+    id: inp.id || null,
+    trail: trail(inp).slice(-2),
+  })).slice(0, 40);
+
+  // The four asset slots — logo, small tile, screenshots, large tile — each own a
+  // file input, and an earlier dump found only two. That dump used a flat query,
+  // and this page keeps its controls inside web components, so the others were
+  // never in scope rather than absent. Shadow roots are walked now, and each input
+  // is reported with the component chain above it and the caption beside it: two
+  // hidden inputs with identical `accept` are told apart by where they live, not
+  // by what they are.
+  const fileInputs = everything
+    .filter(el => el.tagName === 'INPUT' && (el.getAttribute('type') || '') === 'file')
+    .map(inp => ({
+      accept: inp.getAttribute('accept'),
+      multiple: inp.multiple,
+      hidden: !visible(inp),
+      id: inp.id || null,
+      ariaLabel: inp.getAttribute('aria-label'),
+      label: nearestLabel(inp),
+      chain: chain(inp),
+      trail: trail(inp).slice(-3),
+    }));
+
+  // The language table: how many rows, what each row says, and what its buttons
+  // are called. This is the thing the CWS has no equivalent of.
+  const tables = Array.from(document.querySelectorAll('table, [role="grid"], [role="table"]'))
+    .filter(visible)
+    .map(t => {
+      const rows = Array.from(t.querySelectorAll('tr, [role="row"]'));
+      return {
+        rowCount: rows.length,
+        headerCells: Array.from(t.querySelectorAll('th, [role="columnheader"]')).map(txt),
+        firstRows: rows.slice(0, 4).map(r => ({
+          cells: Array.from(r.querySelectorAll('td, th, [role="cell"], [role="gridcell"]'))
+            .map(c => txt(c).slice(0, 40)),
+          buttons: Array.from(r.querySelectorAll('button, [role="button"], a'))
+            .map(b => (b.getAttribute('aria-label') || txt(b)).slice(0, 40))
+            .filter(Boolean),
+        })),
+        trail: trail(t).slice(-2),
+      };
+    });
+
+  // Anchors, so the real URL of the Store listings page and of a per-language
+  // page can be read off the nav instead of guessed.
+  const links = Array.from(document.querySelectorAll('a[href]'))
+    .filter(visible)
+    .map(a => ({ text: txt(a).slice(0, 40), href: a.getAttribute('href') }))
+    .filter(l => l.href && !l.href.startsWith('#'))
+    .filter(l => /microsoftedge|listing|package|availability|propert|privacy/i
+      .test(l.href + ' ' + l.text))
+    .slice(0, 50);
+
+  // Anything clickable, by affordance rather than by tag, shadow roots included.
+  //
+  // Two rounds of narrower queries each missed a control this page really has, so
+  // the probe now matches what pageSaveDraft matches: a div with a click handler
+  // is a button as far as the operator is concerned, and an icon-only command bar
+  // button carries its label in `title` or `aria-labelledby`, neither of which the
+  // old `aria-label || textContent` could read.
   const controls = everything.filter(isClickable).filter(visible)
     .map(el => ({ el, name: accName(el) }));
 
@@ -233,7 +287,7 @@ function pageProbe() {
     .filter(a => /save|close|submit|publish|draft|discard|cancel|apply|done/i.test(a.name));
 
 
-  const images = Array.from(document.querySelectorAll('img'))
+  const images = everything.filter(el => el.tagName === 'IMG')
     .filter(visible).filter(i => i.clientWidth >= 40)
     .slice(0, 30)
     .map(i => ({ size: `${i.clientWidth}x${i.clientHeight}`, alt: i.alt || null,
@@ -972,12 +1026,17 @@ const EdgeDriver = {
   // screenshot in the logo slot is a bad way to find out, and duplicateScreenshots
   // removes most of the need: fill one language by hand, copy it to the rest.
   uploadScreenshot: async () => NOT_YET('upload a screenshot',
-    'A "Details for <language>" page exposes only TWO hidden .png inputs for four '
-    + 'asset slots — logo, small tile, screenshots, large tile — and nothing in '
-    + 'the dump tells them apart. Use duplicateScreenshots instead: fill one '
-    + 'language by hand and copy it to the rest. To finish this properly, probe a '
-    + 'details page whose screenshots have been deleted; the input that appears '
-    + 'then is the screenshots one.'),
+    'The four asset slots — logo, small tile, screenshots, large tile — were not '
+    + 'distinguishable in the dump this was written against: it found only TWO '
+    + 'hidden .png inputs, with nothing to tell them apart. That dump used a flat '
+    + 'query, and this page keeps its controls inside web components, so the '
+    + 'others were out of scope rather than absent — the same blindness that hid '
+    + 'the save button. "Probe page" now walks shadow roots and reports each file '
+    + 'input with the component chain above it and the caption beside it. Run it '
+    + 'on a "Details for <language>" page and send the fileInputs section; the '
+    + 'selector gets written against that rather than guessed. Meanwhile '
+    + 'duplicateScreenshots is the way through: fill one language by hand and '
+    + 'copy it to the rest.'),
 };
 
 // ── What the dumps settled ───────────────────────────────────────────────────
