@@ -209,11 +209,21 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
     const name = baseName(path);
     const b64 = await readFileNative(path, true);
 
+    // Announced before it starts, not only after it succeeds. A run that stalled
+    // on the second of five printed one ✓ and then nothing, so there was no way to
+    // tell which file it was on — or that it had got past the first at all.
+    onProgress(`  upload ${name} (${i}/${total})…`);
+
     const before = await driver.countScreenshots(tabId, scope);
     const up = await driver.uploadScreenshot(tabId, b64, name, scope);
     if (!up?.ok) throw new PublishError(`Upload of ${name} failed`, up);
     await waitForShotCount(driver, tabId, scope, (before?.count ?? 0) + 1, UPLOAD_WAIT_MS);
-    onProgress(`  upload ${name} ✓`);
+    // Which gesture the page accepted, when the driver reports one and it was not
+    // the first. That is the answer to a question three rounds of guessing could
+    // not settle, so it belongs in the log rather than in a diagnostic.
+    onProgress(up.via && up.via !== 1
+      ? `  upload ${name} ✓ (accepted on gesture ${up.via})`
+      : `  upload ${name} ✓`);
   }
 }
 

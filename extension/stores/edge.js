@@ -1080,26 +1080,28 @@ async function pageDeleteOneScreenshot() {
   return { ok: true, before, after, confirmed };
 }
 
-// Puts one PNG into the screenshot slot, and does not claim success until the
-// page shows it.
+// Applies ONE upload mechanism, and returns immediately.
 //
-// The slot has ONE file input, shared, sitting directly under <screenshots> — the
-// diagnostic settled that, and it also settled that the earlier theories were
-// wrong: there is no per-image replacement uploader to pick between, and the
-// input holds nothing afterwards. The first upload works and the second does not,
-// with the same input, the same code and a valid file (1280x800, the size the
-// card asks for). So what differs is the component's state, not our choice of
-// element.
+// Short on purpose. This used to carry the verify-and-escalate loop itself, which
+// meant a single injected script running for up to 45 seconds — and an injected
+// script that outlives a re-render of the page dies with it, taking its promise
+// with it. That is what a run looked like when it stopped after two screenshots
+// with no error at all: nothing had failed, nothing was going to answer either.
+// The loop belongs in the driver, where it survives the page and can time out.
 //
-// Which is why this stopped guessing and started checking. Each mechanism is
-// applied and then VERIFIED against the thumbnail count before the next is tried,
-// and the function reports which one worked. A guess that reports success without
-// looking is what turned three separate causes into three separate round trips.
+// `mechanism` says which gesture to make:
+//
+//   1  a file picker: assign input.files, then input + change. Works on an empty
+//      slot; the second upload is where it stops being enough.
+//   2  a drop on the card. The card announces its accepted file types, so it is a
+//      drop zone as well as a picker, and a component can listen for one without
+//      listening for the other. Does NOT touch input.files — a drop does not.
+//   3  focus / input / change / blur, for a form that commits on blur rather than
+//      on change.
 //
 // The visible "Add Image" affordance is never clicked: it opens the OS file
 // picker, which no script can fill.
-async function pageUploadScreenshot(b64, filename) {
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+function pageApplyUpload(b64, filename, mechanism) {
   const deepAll = (root, out) => {
     out = out || [];
     for (const el of root.querySelectorAll('*')) {
@@ -1130,21 +1132,10 @@ async function pageUploadScreenshot(b64, filename) {
     };
   }
 
-  const visible = el => {
-    const s = getComputedStyle(el);
-    return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
-  };
-  // The same count the caller polls, so "it worked" here means the same thing
-  // there. Thumbnails, not file inputs: the thumbnail is what a screenshot is on
-  // this page, and its alt carries the filename.
-  const count = () => deepAll(root).filter(el => el.tagName === 'IMG')
-    .filter(visible).filter(i => i.clientWidth >= 40).length;
-
-  // The card each uploader belongs to: the outermost element under the slot that
-  // contains it. With a shared input there is only ever one, but a slot that
-  // grows a replacement uploader per image would still be handled — a
-  // replacement's card holds the thumbnail it would replace, the add uploader's
-  // card holds none.
+  // The card an uploader belongs to: the outermost element under the slot that
+  // contains it. This slot has one shared input, so there is one card — but a slot
+  // that grew a replacement uploader per image would still be handled, a
+  // replacement's card holding the thumbnail it would replace.
   const card = el => {
     let p = el;
     while (p.parentElement && p.parentElement !== root) p = p.parentElement;
@@ -1159,112 +1150,66 @@ async function pageUploadScreenshot(b64, filename) {
     }
     return '';
   };
-  const pick = () => {
-    const inputs = deepAll(root)
-      .filter(el => el.tagName === 'INPUT' && (el.getAttribute('type') || '') === 'file');
-    if (!inputs.length) return null;
-    const empty = inputs.filter(i => !Array.from(card(i).querySelectorAll('img'))
-      .some(img => img.clientWidth >= 40));
-    return empty.find(i => /add\s*image/i.test(nearestLabel(i)))
-      || empty[empty.length - 1]
-      || inputs[inputs.length - 1];
-  };
+
+  const inputs = deepAll(root)
+    .filter(el => el.tagName === 'INPUT' && (el.getAttribute('type') || '') === 'file');
+  if (!inputs.length) {
+    return { ok: false, step: 'no-screenshot-file-input',
+             detail: 'The <screenshots> element has no file input at all. It may '
+               + 'already hold the maximum of six images.' };
+  }
+  const empty = inputs.filter(i => !Array.from(card(i).querySelectorAll('img'))
+    .some(img => img.clientWidth >= 40));
+  const byLabel = empty.find(i => /add\s*image/i.test(nearestLabel(i)));
+  const input = byLabel || empty[empty.length - 1] || inputs[inputs.length - 1];
+  const chose = byLabel ? 'add-image' : (empty.length ? 'no-thumbnail' : 'last');
 
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  const makeFile = () => new File([bytes], filename, { type: 'image/png' });
   const transfer = () => {
     const dt = new DataTransfer();
-    dt.items.add(makeFile());
+    dt.items.add(new File([bytes], filename, { type: 'image/png' }));
     return dt;
   };
-
-  const before = count();
-
-  // Re-picked before each attempt: the component may replace its own input
-  // between them, and holding a detached element is how an attempt fails without
-  // anything to show for it.
   const fill = () => {
-    const input = pick();
-    if (!input) return null;
-    // Cleared first, the way a real re-selection leaves it. An uploader that
-    // reads files[0] and resets its input sees no change when the same element is
+    // Cleared first, the way a real re-selection leaves it. An uploader that reads
+    // files[0] and resets its input sees no change when the same element is
     // assigned again while still holding the previous file.
     try { input.value = ''; } catch (e) { /* some inputs refuse; assigning still works */ }
     input.files = transfer().files;
-    return input;
   };
 
-  const MECHANISMS = [
-    // 1. What a file picker does. This is the one that works on an empty slot.
-    () => {
-      const input = fill();
-      if (!input) return false;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    },
-    // 2. What a drag and drop does. The card announces its accepted file types,
-    //    so it is a drop zone as well as a picker, and a component can listen for
-    //    one without listening for the other.
-    () => {
-      const input = pick();
-      const zone = input ? card(input) : root;
-      const dt = transfer();
-      for (const type of ['dragenter', 'dragover', 'drop']) {
-        let ev;
-        try {
-          ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
-        } catch (e) {
-          ev = new Event(type, { bubbles: true, cancelable: true });
-          Object.defineProperty(ev, 'dataTransfer', { value: dt });
-        }
-        zone.dispatchEvent(ev);
-      }
-      return true;
-    },
-    // 3. What a person does. Some forms commit on blur rather than on change, and
-    //    a component that tracks focus will not have seen any of the above.
-    () => {
-      const input = fill();
-      if (!input) return false;
-      input.dispatchEvent(new Event('focus', { bubbles: true }));
-      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-      input.dispatchEvent(new Event('blur', { bubbles: true }));
-      return true;
-    },
-  ];
+  const common = { inputs: inputs.length, chose, mechanism, filename,
+                   size: bytes.length };
 
-  const tried = [];
-  for (let m = 0; m < MECHANISMS.length; m += 1) {
-    if (!MECHANISMS[m]()) {
-      tried.push({ mechanism: m + 1, applied: false });
-      continue;
-    }
-    tried.push({ mechanism: m + 1, applied: true });
-    // Verified before escalating, so a mechanism that merely takes its time is
-    // not overtaken by the next one and the same file uploaded twice.
-    for (let i = 0; i < 30; i += 1) {
-      await sleep(500);
-      if (count() > before) {
-        return { ok: true, filename, size: bytes.length, via: m + 1, tried,
-                 before, after: count() };
+  if (mechanism === 2) {
+    const zone = card(input);
+    const dt = transfer();
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      let ev;
+      try {
+        ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+      } catch (e) {
+        ev = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(ev, 'dataTransfer', { value: dt });
       }
+      zone.dispatchEvent(ev);
     }
+    return { ok: true, ...common };
   }
 
-  return {
-    ok: false,
-    step: 'upload-not-accepted',
-    filename,
-    before,
-    after: count(),
-    tried,
-    detail: 'The file was put into the slot\'s input and the page did not take it. '
-      + 'Three mechanisms were tried — a picker change, a drop on the card, and a '
-      + 'focus/change/blur sequence — each verified against the thumbnail count '
-      + 'before the next. The count did not move for any of them.',
-  };
+  if (mechanism === 3) {
+    fill();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    return { ok: true, ...common };
+  }
+
+  fill();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, ...common };
 }
 
 // What the screenshot slot actually looks like right now.
@@ -1400,6 +1345,8 @@ async function pageDuplicateScreenshots() {
 
 // ── driver (background context) ───────────────────────────────────────────────
 
+const edgeSleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function edgeExec(tabId, func, args = []) {
   const results = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN', func, args,
@@ -1531,8 +1478,59 @@ const EdgeDriver = {
   // `scope` is ignored: this store has no global assets card, every asset on a
   // details page belongs to that language, and duplicateScreenshots is how one
   // language reaches the other 42.
-  uploadScreenshot: (tabId, b64, filename) =>
-    edgeExec(tabId, pageUploadScreenshot, [b64, filename]),
+  // Applies a mechanism, verifies it, escalates only if the page did not react.
+  //
+  // The loop lives here rather than in the page because an injected script that
+  // outlives a re-render dies with it and its promise never settles — a run that
+  // stopped after two screenshots with no error at all was exactly that. From
+  // here every injection is short, the waiting is ours, and a page that stops
+  // answering becomes a timeout instead of a silence.
+  //
+  // The count is re-read before each escalation, so a mechanism that merely takes
+  // its time is not overtaken by the next one and the same file uploaded twice.
+  async uploadScreenshot(tabId, b64, filename) {
+    const shots = async () => {
+      const res = await edgeExec(tabId, pageCountScreenshots);
+      return res && res.ok ? res.count : null;
+    };
+    const before = await shots();
+    const tried = [];
+
+    for (const mechanism of [1, 2, 3]) {
+      const applied = await edgeExec(tabId, pageApplyUpload, [b64, filename, mechanism]);
+      tried.push({ mechanism, ok: applied ? applied.ok === true : false,
+                   step: applied ? applied.step : 'no-result',
+                   chose: applied ? applied.chose : null });
+      // A refusal that is about the page rather than the gesture — no slot, no
+      // input — will not be fixed by making a different gesture at it.
+      if (applied && applied.ok !== true) {
+        return { ...applied, tried, before };
+      }
+      if (!applied) continue;
+
+      for (let i = 0; i < 40; i += 1) {
+        await edgeSleep(750);
+        const now = await shots();
+        if (now !== null && before !== null && now > before) {
+          return { ok: true, filename, via: mechanism, before, after: now, tried,
+                   chose: applied.chose };
+        }
+      }
+    }
+
+    return {
+      ok: false,
+      step: 'upload-not-accepted',
+      filename,
+      before,
+      after: await shots(),
+      tried,
+      detail: 'The file was put into the slot and the page did not take it. Three '
+        + 'gestures were tried — a picker change, a drop on the card, and a '
+        + 'focus/change/blur sequence — each verified against the thumbnail count '
+        + 'before the next was attempted. The count did not move for any of them.',
+    };
+  },
 };
 
 // ── What the dumps settled ───────────────────────────────────────────────────
@@ -1582,6 +1580,13 @@ const EdgeDriver = {
 //   component's state, and that is still unexplained. The upload therefore
 //   verifies each mechanism against the thumbnail count instead of trusting its
 //   own dispatch, and reports which one worked.
+// - **Keep injected functions short.** The verify-and-escalate loop lived in the
+//   page for one round, which made a single injected script run for up to 45
+//   seconds — and a script that outlives a re-render dies with it, its promise
+//   never settling. The symptom was a run that stopped after two screenshots with
+//   no error at all: nothing had failed and nothing was going to answer. Loops
+//   that wait on the page belong in the driver, where a page that stops answering
+//   becomes a timeout.
 // - The card's own text gives the accepted sizes as **1280 x 800 or 640 x 400** —
 //   not 640x480, as a note here once said. Ours are 1280x800.
 // - **A slot MIGHT carry one uploader per image, plus one to add with.** The logo slot
