@@ -213,6 +213,18 @@ describe('a command bar built out of web components', () => {
     commandBarButton('Save draft');
     expect(pageProbe().buttons).toContain('Save draft');
   });
+
+  // Once, not twice. The host and the <button> inside it are the same button to a
+  // reader, and listing both is what made a real dump read "Save draft", "Save
+  // draft", "Close", "Close" — every control doubled, and a dump the operator has
+  // to paste by hand is then twice as likely to be truncated.
+  test('and lists it once, not once per layer', async () => {
+    const { pageProbe } = loadPageFns('');
+    commandBarButton('Save draft');
+    const { buttons, shell } = pageProbe();
+    expect(buttons.filter((b) => b === 'Save draft')).toHaveLength(1);
+    expect(shell.clickable).toBe(1);
+  });
 });
 
 describe('when there is no save control', () => {
@@ -557,5 +569,93 @@ describe('uploading into a slot that already has images', () => {
     });
     expect(pageUploadScreenshot(b64, 'x.png')).toMatchObject({ chose: 'last' });
     expect(document.querySelector('.adder').files[0].name).toBe('x.png');
+  });
+});
+
+// ── the delete confirmation ──────────────────────────────────────────────────
+//
+// Partner Center asks before removing a screenshot, and its dialog is a web
+// component: <shell_he-dialog>, no role="dialog" on the host, buttons that are
+// themselves components. A flat query for [role="dialog"] finds nothing, the
+// confirmation is never pressed, and the delete silently does not happen — which
+// is what a real run reported as {ok: false, before: 1, after: 1}, saying nothing
+// else at all.
+describe('deleting a screenshot', () => {
+  const setup = ({ confirmLabels = ['Delete', 'Cancel'], removes = true } = {}) => {
+    document.body.innerHTML = `<screenshots><div class="asset">
+      <img alt="Screenshot shot0.png" src="x.png">
+      <button aria-label="Delete"></button></div></screenshots>`;
+    document.querySelectorAll('img').forEach((img) => {
+      Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
+    });
+
+    const pressed = [];
+    document.querySelector('screenshots [aria-label="Delete"]')
+      .addEventListener('click', () => {
+        // The store's own dialog: a custom element with no dialog role, whose
+        // buttons keep their label in the light DOM and their handler inside.
+        const dlg = document.createElement('shell_he-dialog');
+        document.body.appendChild(dlg);
+        confirmLabels.forEach((label) => {
+          const host = document.createElement('v6_he-button');
+          host.textContent = label;
+          dlg.appendChild(host);
+          host.attachShadow({ mode: 'open' }).innerHTML = '<button><slot></slot></button>';
+          host.shadowRoot.querySelector('button').addEventListener('click', () => {
+            pressed.push(label);
+            if (removes && /delete/i.test(label)) {
+              document.querySelector('.asset').remove();
+            }
+          });
+        });
+      });
+    return pressed;
+  };
+
+  test('presses the confirmation inside the component dialog', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const pressed = setup();
+    expect(await pageDeleteOneScreenshot())
+      .toMatchObject({ ok: true, before: 1, after: 0, confirmed: 'Delete' });
+    expect(pressed).toEqual(['Delete']);
+  });
+
+  // The one that must never be pressed: it leaves the screenshot in place while
+  // the run believes it is gone, and the next upload then overflows the cap of six.
+  test('never presses Cancel', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const pressed = setup({ confirmLabels: ['Cancel', 'Delete'] });
+    await pageDeleteOneScreenshot();
+    expect(pressed).toEqual(['Delete']);
+  });
+
+  test('and reports what the dialog offered when nothing affirms', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    setup({ confirmLabels: ['Cancel', 'Close'] });
+    const out = await pageDeleteOneScreenshot();
+    expect(out).toMatchObject({ ok: false, step: 'no-confirm-control', before: 1 });
+    expect(out.dialogs[0]).toMatchObject({ tag: 'SHELL_HE-DIALOG' });
+    expect(out.dialogs[0].buttons).toEqual(['Cancel', 'Close']);
+  });
+
+  test('and says so when the confirmation did not take', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    setup({ removes: false });
+    expect(await pageDeleteOneScreenshot()).toMatchObject({
+      ok: false, step: 'delete-did-not-take', sawDialog: true, confirmed: 'Delete',
+    });
+  });
+
+  test('and when no dialog appeared at all', async () => {
+    const { pageDeleteOneScreenshot } = loadPageFns('');
+    document.body.innerHTML = `<screenshots><div class="asset">
+      <img alt="Screenshot shot0.png" src="x.png">
+      <button aria-label="Delete"></button></div></screenshots>`;
+    document.querySelectorAll('img').forEach((img) => {
+      Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
+    });
+    const out = await pageDeleteOneScreenshot();
+    expect(out).toMatchObject({ ok: false, step: 'delete-did-not-take', sawDialog: false });
+    expect(out.detail).toMatch(/does ask for confirmation/);
   });
 });
