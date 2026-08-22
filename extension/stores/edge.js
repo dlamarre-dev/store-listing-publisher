@@ -5,8 +5,8 @@
 // reachable by driving Partner Center — same situation as the Chrome Web Store,
 // and the reason this file exists next to stores/cws.js.
 //
-// Written against real dumps of both pages, not against guesses. Only
-// uploadScreenshot still refuses, for a reason stated where it refuses.
+// Written against real dumps of both pages, not against guesses. Every step is
+// implemented; the notes at the bottom record what each dump settled.
 //
 // How this store differs from the CWS, all of it confirmed on the page:
 //
@@ -819,36 +819,99 @@ function pageSetDescription(text, apply) {
 //
 // Keyed on the per-image buttons, whose aria-labels carry the filename —
 // "Delete screenshot Promo_1_en.png" — which also keeps the logo and the two
-// promo tiles out of the count: they have bare "Delete" buttons instead.
+// ── the screenshot slot ──────────────────────────────────────────────────────
+//
+// A "Details for <language>" page has four asset slots — logo, small promotional
+// tile, screenshots, large promotional tile — and from the outside they are the
+// same thing four times: a hidden INPUT.fileuploader with accept=".png", a
+// Magnify / Delete / Duplicate trio, and no aria-label that names which is which.
+// Guessing between them is how a screenshot ends up in the logo slot.
+//
+// What does tell them apart is the component each lives in. The probe of a real
+// French details page reported:
+//
+//   INPUT.fileuploader < FORM < SCREENSHOTS < FORM.spacer-xl-bottom < …
+//   INPUT.fileuploader < FORM < DIV.row.form-group-tall < … < SECTION.section
+//
+// So every step below scopes itself to the <screenshots> element and matches
+// nothing outside it. That also retires this driver's earlier assumption that the
+// delete buttons read "Delete screenshot <file>" — on the real page they read
+// "Delete", exactly like the logo's, and only their container distinguishes them.
+// Inside the right container, a plain "Delete" is unambiguous.
+// The root lookup is repeated inside each function rather than shared: these are
+// serialized by executeScript one at a time, so a helper in this file would not
+// travel with them.
 function pageCountScreenshots() {
+  const root = (() => {
+    const direct = document.querySelector('screenshots');
+    if (direct) return direct;
+    const deep = (r, out) => {
+      for (const el of r.querySelectorAll('*')) {
+        out.push(el);
+        if (el.shadowRoot) deep(el.shadowRoot, out);
+      }
+      return out;
+    };
+    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
+  })();
+
+  if (!root) {
+    return { ok: false, step: 'no-screenshot-slot', scope: 'localized',
+             detail: 'No <screenshots> element on this page. Is this a "Details '
+               + 'for <language>" page?' };
+  }
+
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
-  const label = el => (el.getAttribute('aria-label')
-    || (el.textContent || '').replace(/\s+/g, ' ')).trim();
+  // The thumbnail is what a screenshot IS here, and its alt carries the filename —
+  // the sibling slots render theirs as "Extension Store logo icon128.png" and
+  // "Promotile promo-440x280.png", so the same shape is expected in this one.
+  const shots = Array.from(root.querySelectorAll('img'))
+    .filter(visible).filter(i => i.clientWidth >= 40);
 
-  const names = Array.from(document.querySelectorAll('button, [role="button"]'))
-    .filter(visible)
-    .map(el => /^Delete screenshot\s+(.+)$/i.exec(label(el)))
-    .filter(Boolean)
-    .map(m => m[1]);
-
-  return { ok: true, count: names.length, files: names, scope: 'localized' };
+  return {
+    ok: true,
+    count: shots.length,
+    files: shots.map(i => i.alt || null),
+    scope: 'localized',
+  };
 }
 
-// Deletes the first screenshot, and waits for the count to actually drop.
+// Deletes one, then waits for the count to actually drop.
+//
+// Waiting on the count rather than on the click is what makes the caller's loop
+// safe: Partner Center removes the thumbnail asynchronously, and a loop that
+// trusted the click would delete once and then spin against a stale DOM.
 async function pageDeleteOneScreenshot() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const root = (() => {
+    const direct = document.querySelector('screenshots');
+    if (direct) return direct;
+    const deep = (r, out) => {
+      for (const el of r.querySelectorAll('*')) {
+        out.push(el);
+        if (el.shadowRoot) deep(el.shadowRoot, out);
+      }
+      return out;
+    };
+    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
+  })();
+  if (!root) return { ok: false, step: 'no-screenshot-slot' };
+
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const label = el => (el.getAttribute('aria-label')
+    || el.getAttribute('title')
     || (el.textContent || '').replace(/\s+/g, ' ')).trim();
-  const deleters = () => Array.from(document.querySelectorAll('button, [role="button"]'))
+  // Scoped to the slot, so "Delete" needs no qualifier — and must not have one,
+  // since the page does not give it any.
+  const deleters = () => Array.from(root.querySelectorAll('button, [role="button"]'))
     .filter(visible)
-    .filter(el => /^Delete screenshot\s+/i.test(label(el)));
+    .filter(el => /^delete\b/i.test(label(el)));
 
   const before = deleters().length;
   if (!before) return { ok: true, before: 0, after: 0, nothingToDelete: true };
@@ -856,6 +919,7 @@ async function pageDeleteOneScreenshot() {
   deleters()[0].click();
   await sleep(600);
 
+  // A confirmation dialog is document-level, not inside the slot.
   const dlg = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]'))
     .find(visible);
   if (dlg) {
@@ -875,31 +939,110 @@ async function pageDeleteOneScreenshot() {
   return { ok: after < before, before, after };
 }
 
+// Puts one PNG into the screenshot slot's file input.
+//
+// The input is hidden and stays hidden — clicking the visible "Add Image" button
+// would open the OS file picker, which no script can fill. Assigning a File
+// through DataTransfer and dispatching change is what a real drop does, and it is
+// the same mechanism the Chrome Web Store driver uses.
+function pageUploadScreenshot(b64, filename) {
+  const root = (() => {
+    const direct = document.querySelector('screenshots');
+    if (direct) return direct;
+    const deep = (r, out) => {
+      for (const el of r.querySelectorAll('*')) {
+        out.push(el);
+        if (el.shadowRoot) deep(el.shadowRoot, out);
+      }
+      return out;
+    };
+    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
+  })();
+
+  if (!root) {
+    // Reported with the chains, because that is the one thing that separates the
+    // four slots and the only useful thing to look at if this ever moves.
+    const chain = el => {
+      const out = [];
+      let p = el;
+      for (let i = 0; i < 8 && p; i += 1) { out.push(p.tagName); p = p.parentElement; }
+      return out.join(' < ');
+    };
+    return {
+      ok: false,
+      step: 'no-screenshot-slot',
+      detail: 'No <screenshots> element on this page, so there is no way to tell '
+        + 'the screenshot input from the logo and promo-tile ones. Refusing '
+        + 'rather than picking one: a screenshot in the logo slot is an expensive '
+        + 'way to find out.',
+      fileInputs: Array.from(document.querySelectorAll('input[type="file"]'))
+        .map(i => ({ accept: i.getAttribute('accept'), chain: chain(i) })),
+    };
+  }
+
+  const input = root.querySelector('input[type="file"]');
+  if (!input) {
+    return { ok: false, step: 'no-screenshot-file-input',
+             detail: 'The <screenshots> element has no file input. It may already '
+               + 'hold the maximum of six images.' };
+  }
+
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const file = new File([bytes], filename, { type: 'image/png' });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, filename, size: bytes.length };
+}
+
 // Copies this language's screenshots to every other language.
 //
-// The store's own feature, labelled exactly "Duplicate these screenshots for all
-// languages". It is the reason a 43-language listing does not need 215 uploads:
-// fill one language, press this once. Nothing else in this driver saves as much.
+// The store's own feature, and the reason a 43-language listing does not need 215
+// uploads: fill one language, press this once. Nothing else in this driver saves
+// as much.
+//
+// Matched inside the slot on the word "duplicate" alone. The sibling slots label
+// theirs "Duplicate this logo for all languages" and "Duplicate this promotional
+// tile for all languages", so the screenshot wording is predictable but not
+// observed — and inside the right component it does not need to be.
 async function pageDuplicateScreenshots() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const root = (() => {
+    const direct = document.querySelector('screenshots');
+    if (direct) return direct;
+    const deep = (r, out) => {
+      for (const el of r.querySelectorAll('*')) {
+        out.push(el);
+        if (el.shadowRoot) deep(el.shadowRoot, out);
+      }
+      return out;
+    };
+    return deep(document, []).find(el => el.tagName === 'SCREENSHOTS') || null;
+  })();
+  if (!root) return { ok: false, step: 'no-screenshot-slot' };
+
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const label = el => (el.getAttribute('aria-label')
+    || el.getAttribute('title')
     || (el.textContent || '').replace(/\s+/g, ' ')).trim();
 
-  const button = Array.from(document.querySelectorAll('button, [role="button"]'))
+  const button = Array.from(root.querySelectorAll('button, [role="button"]'))
     .filter(visible)
-    .find(el => /duplicate these screenshots for all languages/i.test(label(el)));
+    .find(el => /duplicate/i.test(label(el)));
 
   if (!button) {
     return {
       ok: false,
       step: 'no-duplicate-control',
-      detail: 'No "Duplicate these screenshots for all languages" button here. It '
-        + 'only appears once at least one screenshot has been uploaded for this '
-        + 'language.',
+      detail: 'No duplicate button in the screenshot slot. It only appears once at '
+        + 'least one screenshot has been uploaded for this language.',
+      buttons: Array.from(root.querySelectorAll('button, [role="button"]'))
+        .filter(visible).map(label).filter(Boolean),
     };
   }
   button.click();
@@ -1020,23 +1163,17 @@ const EdgeDriver = {
   // feature, and the reason uploading per language is mostly unnecessary here.
   duplicateScreenshots: tabId => edgeExec(tabId, pageDuplicateScreenshots),
 
-  // The one step still guessing would be dangerous. A details page exposes only
-  // TWO hidden .png inputs for four asset slots — logo, small tile, screenshots,
-  // large tile — and nothing in the dump distinguishes them. Putting a
-  // screenshot in the logo slot is a bad way to find out, and duplicateScreenshots
-  // removes most of the need: fill one language by hand, copy it to the rest.
-  uploadScreenshot: async () => NOT_YET('upload a screenshot',
-    'The four asset slots — logo, small tile, screenshots, large tile — were not '
-    + 'distinguishable in the dump this was written against: it found only TWO '
-    + 'hidden .png inputs, with nothing to tell them apart. That dump used a flat '
-    + 'query, and this page keeps its controls inside web components, so the '
-    + 'others were out of scope rather than absent — the same blindness that hid '
-    + 'the save button. "Probe page" now walks shadow roots and reports each file '
-    + 'input with the component chain above it and the caption beside it. Run it '
-    + 'on a "Details for <language>" page and send the fileInputs section; the '
-    + 'selector gets written against that rather than guessed. Meanwhile '
-    + 'duplicateScreenshots is the way through: fill one language by hand and '
-    + 'copy it to the rest.'),
+  // Puts one PNG into the screenshot slot. It refused until a probe of a real
+  // details page showed what separates the four slots — the component each lives
+  // in, <screenshots> for this one — because the alternative was picking between
+  // identical-looking hidden inputs, and a screenshot in the logo slot is an
+  // expensive way to find out you picked wrong.
+  //
+  // `scope` is ignored: this store has no global assets card, every asset on a
+  // details page belongs to that language, and duplicateScreenshots is how one
+  // language reaches the other 42.
+  uploadScreenshot: (tabId, b64, filename) =>
+    edgeExec(tabId, pageUploadScreenshot, [b64, filename]),
 };
 
 // ── What the dumps settled ───────────────────────────────────────────────────
@@ -1051,24 +1188,53 @@ const EdgeDriver = {
 //   pageListLanguages and pageOpenLanguage are written against exactly that.
 // - textareas, editables, inputs, fileInputs and images were ALL empty on this
 //   page. Nothing to write here: every field lives behind the row button, on the
-//   "Details for <language>" page. That is why the remaining steps still refuse.
+//   "Details for <language>" page.
 // - "Add a language" exists as a control, and only ONE row (English) was present
 //   despite 43 locales in the package — verified inside the zip. That is the
 //   store's model, not a defect: the package makes a language AVAILABLE, adding
 //   it is a separate action. Any run over 43 locales has to add 42 of them first.
 //
-// ── What is still needed ─────────────────────────────────────────────────────
+// ── What the Details page settled ───────────────────────────────────────────
 //
-// 1. A dump of a "Details for <language>" page. `textareas` vs `editables`
-//    decides how the description is written: a plain textarea takes the CWS
-//    approach (native value setter + input/change events), a rich-text editor
-//    does not. `maxLength` there should confirm the 10,000-character cap.
-// 2. A dump with the "Add a language" control open, to learn how its options are
-//    rendered and how they name languages — that mapping is what an
-//    add-42-languages step needs, and it is the last unknown of this page.
-// 3. Screenshots: look for "Duplicate this screenshot for all languages" in the
-//    Details dump. If it is there, the right shape is upload 5 once and
-//    duplicate, not 215 uploads. The cap is 6, sizes 640x480 or 1280x800; ours
-//    are 1280x800.
-// 4. Never press Publish. That is edge/edge_publish.py's job, and the review
+// Probed against "Details for French", 2026-08-22, with the screenshot slot
+// empty — the state that makes its file input visible to a dump at all.
+//
+// - The description is a plain <textarea>, id `formly_2_textarea_description_1`,
+//   maxlength 10000. Angular Formly, so the CWS write path applies: native value
+//   setter, then input and change. `editables` was empty — no rich-text editor.
+// - Save draft is <v6_he-button>Save draft</v6_he-button>: a real <button> in a
+//   shadow root with the label slotted in from the light DOM. It reads
+//   "[disabled]" once the page is saved, which is what nothing-to-save reports.
+// - **Four asset slots, one shape.** Logo, small promotional tile, screenshots
+//   and large promotional tile each own a hidden INPUT.fileuploader with
+//   accept=".png", a Magnify / Delete / Duplicate trio, and no aria-label naming
+//   which is which. The only thing separating them is the component they live in:
+//
+//       INPUT.fileuploader < FORM < SCREENSHOTS < FORM.spacer-xl-bottom < …
+//       INPUT.fileuploader < FORM < DIV.row.form-group-tall < … < SECTION.section
+//
+//   A slot that already holds an image exposes no input, which is why an earlier
+//   dump counted two and concluded there were only two. Every screenshot step is
+//   scoped to <screenshots> for this reason, and refuses when it is absent.
+// - The delete buttons read "Delete", not "Delete screenshot <file>" — an earlier
+//   assumption in this driver, never observed. Inside the right component a plain
+//   "Delete" is unambiguous, which is the whole argument for scoping by component
+//   rather than by label text.
+// - Thumbnail alts carry the filename: "Extension Store logo icon128.png",
+//   "Promotile promo-440x280.png". countScreenshots reads the same shape.
+// - The duplicate buttons are per slot: "Duplicate this logo for all languages",
+//   "Duplicate this promotional tile for all languages". The screenshot wording
+//   is predictable but was not observed — the slot was empty, and the control
+//   only appears once an image is in it. Matched on "duplicate" inside the
+//   component, so the exact wording does not matter.
+//
+// ── Standing rules ───────────────────────────────────────────────────────────
+//
+// 1. Never press Publish. That is edge/edge_publish.py's job, and the review
 //    before it stays human.
+// 2. The screenshot cap is 6; sizes 640x480 or 1280x800, ours are 1280x800.
+//    Duplicating from one language beats 215 uploads and is the store's own
+//    feature — prefer it.
+// 3. When the console changes, probe first. Three separate controls have now been
+//    missed by a selector narrower than the page, and each time the dump found
+//    them once it stopped filtering itself.
