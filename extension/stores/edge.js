@@ -1041,7 +1041,7 @@ function pageCountScreenshots() {
 //
 // And waiting on the count rather than on the click is what makes the caller's
 // loop safe — Partner Center removes the thumbnail asynchronously.
-async function pageDeleteOneScreenshot() {
+async function pageDeleteOneScreenshot(only) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const deepAll = (root, out) => {
     out = out || [];
@@ -1080,9 +1080,15 @@ async function pageDeleteOneScreenshot() {
     || el.getAttribute('title')
     || slotText(el, 0)).replace(/\s+/g, ' ').trim();
 
+  // Scoped to the slot, so "Delete" needs no qualifier — and must not have one,
+  // since the page does not give it any. Given `only`, the one whose label carries
+  // that filename: the console writes "Delete screenshot Promo_1_fr.png", which is
+  // what lets a repair remove the single tile that is wrong instead of clearing the
+  // slot and re-uploading four good screenshots to fix one bad one.
   const deleters = () => Array.from(root.querySelectorAll('button, [role="button"]'))
     .filter(visible)
-    .filter(el => /^delete\b/i.test(name(el)));
+    .filter(el => /^delete\b/i.test(name(el)))
+    .filter(el => !only || name(el).includes(only));
 
   const before = deleters().length;
   if (!before) return { ok: true, before: 0, after: 0, nothingToDelete: true };
@@ -1503,9 +1509,12 @@ const SETTLE_MAX_MS = 45000;
 // a locale it costs about two minutes each, and a run that completes is worth more
 // than one that fails on the second file.
 //
-// Lower it only against a run that shows uploads accepted sooner — the log prints
-// the gap it waited, so that evidence is there to collect.
-const MIN_UPLOAD_GAP_MS = 30000;
+// Halved from 30s to 15s once the run that proved 30s also gained a verification
+// pass: the slot is checked against the filenames that were sent before the page
+// is saved, so a gap that turns out to be too short now shows up as a repair in
+// the log instead of as a wrong listing that nobody looks at again. Lower it
+// further only against a run that records no repairs — the log prints both.
+const MIN_UPLOAD_GAP_MS = 15000;
 let lastUploadAt = 0;
 let learnedLatency = null;
 
@@ -1646,7 +1655,8 @@ const EdgeDriver = {
     edgeExec(tabId, pageSetDescription, [text, apply]),
 
   countScreenshots: tabId => edgeExec(tabId, pageCountScreenshots),
-  deleteOneScreenshot: tabId => edgeExec(tabId, pageDeleteOneScreenshot),
+  deleteOneScreenshot: (tabId, scope, only) =>
+    edgeExec(tabId, pageDeleteOneScreenshot, [only || null]),
 
   // Copies one language's screenshots to all the others — the store's own
   // feature.

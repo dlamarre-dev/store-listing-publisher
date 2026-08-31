@@ -100,6 +100,13 @@ function load({ honours = 1, delay = 0, count = 0, applyResult = null,
   return { driver: sandbox.__edge, state };
 }
 
+// Read from the driver rather than repeated here: the gap is a knob, and a test
+// that hardcodes its value fails on the next tuning run for a reason that has
+// nothing to do with what it is checking.
+const GAP_MS = Number(fs.readFileSync(
+  path.join(__dirname, '..', 'extension', 'stores', 'edge.js'), 'utf8')
+  .match(/const MIN_UPLOAD_GAP_MS = (\d+);/)[1]);
+
 const B64 = Buffer.from('PNG').toString('base64');
 const upload = (opts) => {
   const { driver, state } = load(opts);
@@ -285,8 +292,8 @@ describe('the wait before adding to a slot', () => {
 
   test('but is owed after an upload of our own', async () => {
     const { res } = await second({});
-    expect(res.settleMs).toBeGreaterThanOrEqual(29000);
-    expect(res.settleMs).toBeLessThan(31000);
+    expect(res.settleMs).toBeGreaterThanOrEqual(GAP_MS);
+    expect(res.settleMs).toBeLessThan(GAP_MS + 2000);
   });
 
   // A page that cannot answer the readiness question must not skip the gap: the
@@ -294,7 +301,7 @@ describe('the wait before adding to a slot', () => {
   test('a slot that cannot be read still waits out the gap', async () => {
     const { res, state } = await second({ slotState: false });
     expect(state.slotChecks).toBe(1);
-    expect(res.settleMs).toBeGreaterThanOrEqual(29000);
+    expect(res.settleMs).toBeGreaterThanOrEqual(GAP_MS);
   });
 
   test('the gap is reported, so it can be lowered against evidence', async () => {
