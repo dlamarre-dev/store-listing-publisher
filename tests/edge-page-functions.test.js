@@ -70,7 +70,8 @@ function loadPageFns(html, onTick) {
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
   sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
     + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
-    + ' pageListLanguages, pageDescribeSlot, pageApplyUpload };');
+    + ' pageListLanguages, pageDescribeSlot, pageApplyUpload,'
+    + ' pageOpenLanguage };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -762,5 +763,94 @@ describe('the three upload gestures', () => {
     const input = slot();
     expect(pageApplyUpload(b64, 'p.png', 99)).toMatchObject({ ok: true });
     expect(input.files[0].name).toBe('p.png');
+  });
+});
+
+// ── opening a language, on a table that renders late ─────────────────────────
+//
+// A run printed all 42 languages on the listings page and then aborted on one of
+// them with `languagesPresent: []`. Which language it hit changed between runs —
+// Spanish twice, then Arabic — which is the signature of a race rather than of a
+// missing row. Partner Center renders this table after the page reports complete,
+// and only pageListLanguages had been taught to wait for it.
+//
+// The wait is for OUR row, not for any row: the table can arrive in pieces, and a
+// first row is no evidence that the one being looked for has come.
+describe('opening a language', () => {
+  const ROW = (lang) => `<tr><td>${lang}</td>
+    <td><button aria-label="Edit ${lang} language details page"></button></td></tr>`;
+
+  test('finds a row that is already there', async () => {
+    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('Arabic')}</table>`);
+    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+  });
+
+  test('waits for a row that arrives late', async () => {
+    let ticks = 0;
+    const { pageOpenLanguage } = loadPageFns('<table></table>', () => {
+      ticks += 1;
+      if (ticks === 4) {
+        document.body.innerHTML = `<table>${ROW('English')}${ROW('Arabic')}</table>`;
+      }
+    });
+    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+  });
+
+  // Rows arriving in pieces: the first one is not the one we want, and stopping
+  // there is exactly the bug.
+  test('and keeps waiting when the rows that arrived are other languages', async () => {
+    let ticks = 0;
+    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`, () => {
+      ticks += 1;
+      if (ticks === 5) {
+        document.body.innerHTML = `<table>${ROW('English')}${ROW('Arabic')}</table>`;
+      }
+    });
+    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+  });
+
+  // The two failures read identically before, and they call for opposite
+  // responses: add the language, or just run it again.
+  test('says the page never rendered when there are no rows at all', async () => {
+    const { pageOpenLanguage } = loadPageFns('<div>loading</div>');
+    const out = await pageOpenLanguage(['Arabic']);
+    expect(out).toMatchObject({ ok: false, step: 'language-not-added', languagesPresent: [] });
+    expect(out.detail).toMatch(/did not render/);
+  });
+
+  test('and says the language is missing when other languages are listed', async () => {
+    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`);
+    const out = await pageOpenLanguage(['Arabic']);
+    expect(out.languagesPresent).toEqual(['English']);
+    expect(out.detail).toMatch(/Add a language/);
+  });
+
+  test('and matches an alias, since the console does not spell them our way', async () => {
+    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('Norwegian (Bokmål)')}</table>`);
+    expect(await pageOpenLanguage(['Norwegian', 'Norwegian (Bokmål)']))
+      .toMatchObject({ ok: true, selected: 'Norwegian (Bokmål)' });
+  });
+});
+
+describe('reading the language table', () => {
+  const ROW = (lang) => `<tr><td>${lang}</td>
+    <td><button aria-label="Edit ${lang} language details page"></button></td></tr>`;
+
+  // A half-rendered table read as complete is worse than an empty one: enrolment
+  // takes the missing rows for missing languages and goes off adding languages
+  // that are already there.
+  test('waits for the row count to stop changing', async () => {
+    const langs = ['English', 'French', 'German', 'Spanish'];
+    let ticks = 0;
+    const { pageListLanguages } = loadPageFns(`<table>${ROW('English')}</table>`
+      + '<button>Add a language</button>', () => {
+      ticks += 1;
+      if (ticks <= 4) {
+        document.body.innerHTML = `<table>${langs.slice(0, ticks + 1).map(ROW).join('')}</table>`
+          + '<button>Add a language</button>';
+      }
+    });
+    const out = await pageListLanguages();
+    expect(out.languages.map((l) => l.language)).toEqual(langs);
   });
 });

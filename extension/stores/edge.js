@@ -665,10 +665,23 @@ async function pageListLanguages() {
   //
   // Polled by attempts rather than by wall clock, so the wait is bounded without
   // a timer the tests have to sit through.
+  // Waited for twice over: until there are rows at all, and then until the count
+  // stops changing. A first row is not evidence that the table has finished —
+  // and a half-rendered table read as complete is worse than an empty one here,
+  // because enrolment would take the missing rows for missing languages and go
+  // add languages that already exist.
   let state = read();
-  for (let i = 0; i < 40 && !state.rows.length; i += 1) {
+  let stable = 0;
+  for (let i = 0; i < 40; i += 1) {
+    const previous = state.rows.length;
     await sleep(500);
     state = read();
+    if (state.rows.length && state.rows.length === previous) {
+      stable += 1;
+      if (stable >= 2) break;
+    } else {
+      stable = 0;
+    }
   }
 
   // Still nothing after the wait. If the "Add a language" control is there, the
@@ -769,10 +782,25 @@ async function pageOpenLanguage(names) {
   const wanted = names.map(n => String(n).toLowerCase());
   const EDIT_RE = /^Edit\s+(.+?)\s+language details page$/i;
 
-  const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'))
+  const read = () => Array.from(document.querySelectorAll('button, [role="button"], a'))
     .filter(visible)
     .map(el => ({ el, m: EDIT_RE.exec(label(el)) }))
     .filter(x => x.m);
+
+  // Polled, for the same reason pageListLanguages is: Partner Center renders this
+  // table after the page reports complete, so reading it once can catch it empty.
+  // Here the consequence was worse than a wrong count — a run that had just
+  // printed all 42 languages aborted on one of them with languagesPresent: [],
+  // and which language it hit changed from run to run because it was a race.
+  //
+  // Waiting for OUR row rather than for any row: the table can render in pieces,
+  // and a first row is not evidence that the one we want has arrived.
+  let candidates = read();
+  for (let i = 0; i < 40; i += 1) {
+    if (candidates.some(x => wanted.includes(x.m[1].toLowerCase()))) break;
+    await sleep(500);
+    candidates = read();
+  }
 
   const seen = candidates.map(x => x.m[1]);
   const target = candidates.find(x => wanted.includes(x.m[1].toLowerCase()));
@@ -785,9 +813,16 @@ async function pageOpenLanguage(names) {
       languagesPresent: seen,
       // The single most confusing thing about this store, so say it here rather
       // than let it read as "the page is broken".
-      detail: `${names[0]} is not in the Store listings table. The package makes a `
-        + 'language available; it still has to be added from the "Add a language" '
-        + 'menu before it has a details page.',
+      // languagesPresent is what separates the two readings, so say which is
+      // which rather than leaving an empty list to be interpreted.
+      detail: seen.length
+        ? `${names[0]} is not in the Store listings table, which lists `
+          + `${seen.length} other language(s). The package makes a language `
+          + 'available; it still has to be added from the "Add a language" menu '
+          + 'before it has a details page.'
+        : 'The Store listings table had no language rows at all after waiting, so '
+          + 'this is a page that did not render rather than a language that is '
+          + 'missing. Nothing was added or changed; re-running should get past it.',
     };
   }
 
@@ -1773,6 +1808,15 @@ const EdgeDriver = {
 // - The table's row buttons are aria-labelled "Edit <Language> language details
 //   page" and "Remove <Language> language", with the language name in English.
 //   pageListLanguages and pageOpenLanguage are written against exactly that.
+// - **This table renders after the page reports complete, and both readers have to
+//   wait for it.** A run printed all 42 languages and then aborted on one of them
+//   with languagesPresent: [] — and which language it hit moved between runs,
+//   Spanish twice and then Arabic, which is the signature of a race rather than of
+//   a missing row. pageOpenLanguage waits for ITS OWN row, because the table can
+//   arrive in pieces and a first row is no evidence the wanted one has come;
+//   pageListLanguages waits for the count to stop changing, because a
+//   half-rendered table read as complete is worse than an empty one — enrolment
+//   takes the absent rows for absent languages and adds languages that exist.
 // - textareas, editables, inputs, fileInputs and images were ALL empty on this
 //   page. Nothing to write here: every field lives behind the row button, on the
 //   "Details for <language>" page.
