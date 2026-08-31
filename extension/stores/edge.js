@@ -1697,6 +1697,44 @@ const EdgeDriver = {
   // causes; this is what turns the next one into one round trip instead of three.
   describeAssets: tabId => edgeExec(tabId, pageDescribeSlot),
 
+  // Waits for the slot to finish with the LAST upload.
+  //
+  // The gap between uploads was always paid on the way in, so every screenshot
+  // but the final one got the time this console needs — and then the run saved
+  // the page and left while the last thumbnail was still going up. Nothing
+  // downstream could notice: the count was right, the name was right, and what
+  // was missing was only the part that happens after both.
+  //
+  // Two waits, the same pair the gap uses and for the same reasons. The
+  // observable first: every thumbnail carrying its own per-image controls, which
+  // is how one the console has committed is told from one it is still drawing.
+  // Then the floor, because readiness is a hypothesis about what the wait is for
+  // and the gap is the part three runs actually measured. Reusing
+  // MIN_UPLOAD_GAP_MS rather than a second constant is deliberate: the time this
+  // console needs before it will take another upload is the same time it needs to
+  // finish the one before, and tuning one should tune both.
+  async settleAssets(tabId) {
+    let waitedMs = 0;
+    let ready = false;
+    const polls = Math.ceil(SETTLE_MAX_MS / POLL_MS);
+    for (let i = 0; i < polls; i += 1) {
+      const state = await edgeExec(tabId, pageSlotState);
+      if (!state || state.ok !== true) break;
+      if (state.ready) { ready = true; break; }
+      await edgeSleep(POLL_MS);
+      waitedMs += POLL_MS;
+    }
+
+    const owed = lastUploadAt ? MIN_UPLOAD_GAP_MS - (Date.now() - lastUploadAt) : 0;
+    if (owed > 0) {
+      await edgeSleep(owed);
+      waitedMs += owed;
+    }
+    // What it decided to wait, not what the clock says: the two agree in a
+    // browser, and the intent is the useful half in a log line.
+    return { ok: true, ready, waitedMs };
+  },
+
   // Puts one PNG into the screenshot slot. It refused until a probe of a real
   // details page showed what separates the four slots — the component each lives
   // in, <screenshots> for this one — because the alternative was picking between
@@ -1909,6 +1947,14 @@ const EdgeDriver = {
 //   deliberately — MIN_UPLOAD_GAP_MS, owed only against an upload this run made,
 //   and reported in the log so it can be lowered against evidence rather than
 //   guessed downward again.
+// - **The last upload of a locale needs the same wait, and had none.** The gap is
+//   paid on the way IN to the next upload, so every screenshot but the final one
+//   got it; the run then saved the page and moved to the next language while the
+//   last thumbnail was still going up. Nothing downstream could notice — the count
+//   was right and the name was right, and what was missing happens after both.
+//   `settleAssets` closes it, with the same two waits and the same constant: the
+//   time this console needs before it will take another upload is the time it
+//   needs to finish the one before.
 //   One number matters and it is easy to get wrong: the probe must be sized from
 //   FIRST-fill successes only. A success that needed two fills is slower by
 //   construction, and sizing the probe from it makes every later upload wait out

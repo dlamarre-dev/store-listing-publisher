@@ -262,6 +262,19 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
 async function verifyScreenshots(driver, tabId, scope, wanted, sendOne, onProgress) {
   const holds = (files, name) => files.some(f => String(f || '').includes(name));
 
+  // Let the store finish before looking, and therefore before saving. The last
+  // upload is the one that never got the pause the others were given on the way
+  // in — the run saved the page and moved to the next language while its
+  // thumbnail was still going up. A driver that knows how to wait says so; one
+  // that does not is not made to.
+  if (typeof driver.settleAssets === 'function') {
+    const settled = await driver.settleAssets(tabId, scope);
+    if (settled?.waitedMs) {
+      onProgress(`  screenshots: settled in ${(settled.waitedMs / 1000).toFixed(1)}s`
+        + (settled.ready ? '' : ' (the slot never reported itself finished)'));
+    }
+  }
+
   for (let round = 1; round <= SCREENSHOT_REPAIR_ROUNDS; round += 1) {
     const res = await driver.countScreenshots(tabId, scope);
     if (!res?.ok) throw new PublishError('Screenshot section not found on verify', res);
