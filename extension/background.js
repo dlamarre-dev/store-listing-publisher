@@ -21,7 +21,11 @@
 const SETTLE_PAGE_MS  = 6000;   // initial SPA render after tab load
 const SETTLE_FIELD_MS = 1200;   // after a language switch, before touching fields
 const TAB_LOAD_MS     = 60000;
-const UPLOAD_WAIT_MS  = 45000;  // per-screenshot upload (thumbnail appears)
+const UPLOAD_WAIT_MS  = 45000;
+// How many times the screenshots may be checked and repaired before giving up.
+// Two: one to notice, one to fix. A third would mean the repair itself is what is
+// failing, and looping on that hides the problem behind a longer run.
+const SCREENSHOT_REPAIR_ROUNDS = 2;  // per-screenshot upload (thumbnail appears)
 const MAX_DELETES     = 12;     // safety bound on the delete loop
 
 const DRIVERS = { cws: CwsDriver, edge: EdgeDriver };
@@ -207,9 +211,13 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
   if (countRes.count > 0) onProgress('  screenshots: cleared');
 
   const total = screenshotsPerListing(ctx.profile);
+  const wanted = [];
   for (let i = 1; i <= total; i++) {
     const path = screenshotPath(ctx.assetsRoot, ctx.profile, ctx.item, locale, i);
-    const name = baseName(path);
+    wanted.push({ i, path, name: baseName(path) });
+  }
+
+  const sendOne = async ({ i, path, name }) => {
     const b64 = await readFileNative(path, true);
 
     // Announced before it starts, not only after it succeeds. A run that stalled
@@ -230,6 +238,65 @@ async function replaceScreenshots(driver, tabId, ctx, locale, scope, onProgress)
       up.tookMs ? `${(up.tookMs / 1000).toFixed(1)}s` : null,
     ].filter(Boolean).join(', ');
     onProgress(how ? `  upload ${name} ✓ (${how})` : `  upload ${name} ✓`);
+  };
+
+  for (const shot of wanted) await sendOne(shot);
+  await verifyScreenshots(driver, tabId, scope, wanted, sendOne, onProgress);
+}
+
+// Checks the slot holds exactly the files that were sent, and repairs it if not.
+//
+// An upload can fail on the store's side after the thumbnail has appeared, leaving
+// an error tile in the list. The count is then right and the listing is wrong, so
+// counting is not enough — and the page is about to be saved, which is what makes
+// this the last moment it can be caught cheaply.
+//
+// Identity comes from the filename: the console labels each thumbnail with it
+// ("Screenshot Promo_1_fr.png"), so what was sent and what is there can be compared
+// by name instead of by number. A driver that cannot report names is skipped rather
+// than guessed at.
+//
+// Repair is per file — delete the tile that is wrong, send that one again — because
+// clearing the slot would re-upload four good screenshots to fix one bad one, and
+// every upload costs the gap between uploads.
+async function verifyScreenshots(driver, tabId, scope, wanted, sendOne, onProgress) {
+  const holds = (files, name) => files.some(f => String(f || '').includes(name));
+
+  for (let round = 1; round <= SCREENSHOT_REPAIR_ROUNDS; round += 1) {
+    const res = await driver.countScreenshots(tabId, scope);
+    if (!res?.ok) throw new PublishError('Screenshot section not found on verify', res);
+    if (!Array.isArray(res.files) || res.files.some(f => f == null)) {
+      // Nothing to check against. Say so rather than report a verification that
+      // did not happen.
+      onProgress(`  screenshots: ${res.count} present, names unavailable — not verified`);
+      return;
+    }
+
+    const missing = wanted.filter(w => !holds(res.files, w.name));
+    const extra = res.files.filter(f => !wanted.some(w => String(f).includes(w.name)));
+
+    if (!missing.length && !extra.length && res.count === wanted.length) {
+      onProgress(`  screenshots verified: ${res.count}/${wanted.length}`);
+      return;
+    }
+
+    if (round === SCREENSHOT_REPAIR_ROUNDS) {
+      throw new PublishError(
+        `Screenshots did not come out right after ${round} attempt(s)`,
+        { present: res.files, missing: missing.map(w => w.name), extra });
+    }
+
+    onProgress(`  screenshots: ${missing.length} missing, ${extra.length} unexpected `
+      + `— repairing (attempt ${round + 1})`);
+
+    // Unexpected tiles first, so the slot has room: the cap is six against the
+    // five we send, and an error tile occupies one of them.
+    for (const bad of extra) {
+      const del = await driver.deleteOneScreenshot(tabId, scope, bad);
+      if (!del?.ok) throw new PublishError(`Could not remove ${bad}`, del);
+      onProgress(`  removed ${bad}`);
+    }
+    for (const shot of missing) await sendOne(shot);
   }
 }
 
