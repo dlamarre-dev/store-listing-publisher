@@ -55,6 +55,9 @@ function loadPageFns(html, onTick) {
     // DataTransfer, so it gets the smallest one that behaves: a list a File goes
     // into and comes out of, which is all the upload path uses it for.
     Event: window.Event,
+    // The description is written through the prototype's native value setter,
+    // the way the CWS driver does, so the constructor has to be reachable.
+    HTMLTextAreaElement: window.HTMLTextAreaElement,
     File: window.File,
     Blob: window.Blob,
     atob: (b64) => Buffer.from(b64, 'base64').toString('binary'),
@@ -71,7 +74,7 @@ function loadPageFns(html, onTick) {
   sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
     + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
     + ' pageListLanguages, pageDescribeSlot, pageApplyUpload,'
-    + ' pageOpenLanguage };');
+    + ' pageOpenLanguage, pageSetDescription };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -852,5 +855,75 @@ describe('reading the language table', () => {
     });
     const out = await pageListLanguages();
     expect(out.languages.map((l) => l.language)).toEqual(langs);
+  });
+});
+
+// ── finding the description field once the console has an opinion ────────────
+//
+// The label reads "Description" until Partner Center has something to say about
+// the field, and then it reads
+//
+//   "Description  : Warning Avoid referencing other browsers in your extension
+//    description such as Firefox."
+//
+// The validation message is appended to the accessible name. An exact match
+// therefore finds the field on a clean page and loses it on exactly the page that
+// needs fixing — which is what a real run did: five languages written, then an
+// abort on the sixth, whose description had tripped that very warning.
+describe('the description field', () => {
+  const page = (label) =>
+    `<textarea aria-label="${label}" maxlength="10000"></textarea>`;
+
+  test('is found by its plain label', () => {
+    const { pageSetDescription } = loadPageFns(page('Description'));
+    expect(pageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
+  });
+
+  test('and still found once a warning is appended to it', () => {
+    const { pageSetDescription } = loadPageFns(page(
+      'Description  : Warning Avoid referencing other browsers in your extension '
+      + 'description such as Firefox.'));
+    expect(pageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
+  });
+
+  // Anchored at the start rather than searched for anywhere, because these are
+  // different fields and a substring test would take either.
+  test('but is not confused with a short description', () => {
+    const { pageSetDescription } = loadPageFns(page('Short description'));
+    expect(pageSetDescription('hello', true))
+      .toMatchObject({ ok: false, step: 'no-description-field' });
+  });
+
+  test('and a page with neither says what it did see', () => {
+    const { pageSetDescription } = loadPageFns(page('Extension name'));
+    expect(pageSetDescription('hello', true).textareasSeen).toEqual(['Extension name']);
+  });
+
+  // The console reviews the text as it is typed, so its verdict on what we just
+  // wrote is only in the label afterwards. A run that ends "saved" while every
+  // page carries a warning is one that looks fine and then fails certification.
+  test('reports a warning the console raises about what was written', () => {
+    document.body.innerHTML = page('Description');
+    const { pageSetDescription } = loadPageFns('');
+    document.body.innerHTML = page('Description');
+    const ta = document.querySelector('textarea');
+    ta.addEventListener('input', () => ta.setAttribute(
+      'aria-label', 'Description  : Warning Avoid referencing other browsers.'));
+
+    const out = pageSetDescription('hello', true);
+    expect(out.ok).toBe(true);
+    expect(out.warning).toBe('Avoid referencing other browsers.');
+  });
+
+  test('and reports none when the console is content', () => {
+    const { pageSetDescription } = loadPageFns(page('Description'));
+    expect(pageSetDescription('hello', true).warning).toBeNull();
+  });
+
+  test('a dry run writes nothing and still names the field', () => {
+    const { pageSetDescription } = loadPageFns(page('Description'));
+    const out = pageSetDescription('hello', false);
+    expect(out).toMatchObject({ ok: true, dryRun: true, wouldWrite: 5 });
+    expect(document.querySelector('textarea').value).toBe('');
   });
 });

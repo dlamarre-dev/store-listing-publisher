@@ -856,16 +856,29 @@ function pageSetDescription(text, apply) {
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const tas = Array.from(document.querySelectorAll('textarea')).filter(visible);
-  const described = tas.filter(
-    ta => /^description$/i.test((ta.getAttribute('aria-label') || '').trim()));
+
+  // The label is "Description" until the console has something to say about the
+  // field, and then it is "Description  : Warning Avoid referencing other
+  // browsers in your extension description such as Firefox." Partner Center
+  // appends its validation messages to the accessible name, so an exact match
+  // finds the field on a clean page and loses it on exactly the page that needs
+  // fixing — which is what happened: a run wrote five languages and then aborted
+  // on the sixth, whose description had tripped that very warning.
+  //
+  // Matched on the leading word, so a message appended after it is irrelevant.
+  // Still anchored at the start rather than searched for anywhere: "Short
+  // description" and "Description" are different fields, and a substring test
+  // would take either.
+  const labelOf = ta => (ta.getAttribute('aria-label') || '').trim();
+  const described = tas.filter(ta => /^description\b/i.test(labelOf(ta)));
 
   if (!described.length) {
     return {
       ok: false,
       step: 'no-description-field',
-      textareasSeen: tas.map(ta => (ta.getAttribute('aria-label') || '').trim()),
-      detail: 'No textarea labelled "Description" here. Is this a "Details for '
-        + '<language>" page rather than the Store listings table?',
+      textareasSeen: tas.map(labelOf),
+      detail: 'No textarea whose label starts with "Description" here. Is this a '
+        + '"Details for <language>" page rather than the Store listings table?',
     };
   }
   if (described.length > 1) {
@@ -898,7 +911,18 @@ function pageSetDescription(text, apply) {
   ta.dispatchEvent(new Event('input', { bubbles: true }));
   ta.dispatchEvent(new Event('change', { bubbles: true }));
   ta.blur();
-  return { ok: ta.value === text, step: 'done', label, length: ta.value.length, max };
+
+  // Read back AFTER writing: the console validates as you type, so a complaint
+  // raised by what we just wrote is only in the label now. This is the store
+  // reviewing the text before a human does — worth surfacing, not worth failing
+  // on, since it is advisory and the listing still saves.
+  const after = (ta.getAttribute('aria-label') || '').trim();
+  const warning = /warning/i.test(after)
+    ? after.replace(/^description\s*:?\s*/i, '').replace(/^warning\s*/i, '').trim()
+    : null;
+
+  return { ok: ta.value === text, step: 'done', label, length: ta.value.length, max,
+           warning };
 }
 
 // Counts the screenshots on a details page.
