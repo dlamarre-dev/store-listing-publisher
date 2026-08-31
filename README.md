@@ -9,7 +9,7 @@ It is split by **what each mechanism can actually do**, not by store:
 | | Package + release lifecycle | Listing metadata |
 |---|---|---|
 | **Chrome Web Store** | `cws/cws_publish.py` — API v2 | **`extension/`**, a Firefox add-on driving the dev console — [no API exists](#why-the-add-on-exists) |
-| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **`extension/`** driving Partner Center — [no API exists](#why-the-add-on-exists) *(probe-only so far)* |
+| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **`extension/`** driving Partner Center — [no API exists](#why-the-add-on-exists) |
 | **addons.mozilla.org** | `amo/amo_publish.py` — API v5 | `amo/amo_publish.py` — API v5 |
 
 Four of those six boxes are real APIs. Of the two that are not, both are store
@@ -22,8 +22,16 @@ them in the right fields, in the right language, in the right order, which is th
 part that is unbearable to do 43 times by hand.
 
 **Nothing publishes by surprise.** Every write is dry-run by default and needs
-`--apply`. The add-on never saves at all: a run leaves the listing tab open with
-the draft filled in, and clicking **Save draft** stays yours.
+`--apply`, and nothing here ever submits a listing for review — that stays a
+human decision in the console.
+
+Saving differs by store, because the stores differ. The Chrome Web Store keeps
+all 43 languages behind one dropdown on a single page, so a run leaves the tab
+open with the draft filled in and clicking **Save draft** stays yours. Partner
+Center gives each language its own page and **discards what was typed into one
+when you leave it**, so an Edge run has to save each page as it writes it — a run
+that did not would fill 43 pages and keep none. The closing line of the log says
+which of the two happened.
 
 ---
 
@@ -32,7 +40,7 @@ the draft filled in, and clicking **Save draft** stays yours.
 ```bash
 git clone https://github.com/dlamarre-dev/store-listing-publisher
 cd store-listing-publisher
-npm install                     # jest only, for the tests
+npm install                     # jest and a jsdom environment, for the tests
 cp extension/config.example.json extension/config.json
 ```
 
@@ -317,7 +325,7 @@ page.
 
 ---
 
-## Using the CWS add-on
+## Using the add-on
 
 - **Extension** — from the `items` in your config.
 - **Update detailed descriptions** — replaces the description for every locale.
@@ -331,8 +339,8 @@ page.
   aborted run at `pl`. Ignored, with a log line, when no per-language step is
   ticked.
 - **Probe page** — dumps the page's structure (dropdowns, textareas, file
-  inputs, headings, buttons) to the log. This is the debugging entry point when a
-  console changes.
+  inputs, headings, buttons, and what it walked to find them) to the log. This is
+  the debugging entry point when a console changes.
 
   **It reuses a tab already showing that store** and only opens the listing page
   when there is none. That matters more than it sounds: the pages worth dumping
@@ -347,6 +355,14 @@ page.
   again, because you cannot hold a menu open across the click: pressing the
   toolbar button moves focus out of the page, and a menu that closes on blur is
   gone before the probe runs.
+
+  It reads the page the way a screen reader would rather than the way a
+  stylesheet does — accessible names including `title` and `aria-labelledby`,
+  shadow roots walked, `<slot>` resolved to what is slotted into it — and reports
+  its counts. That is not thoroughness for its own sake: three separate controls
+  on Partner Center were missed by a narrower query, each costing a round trip,
+  and one dump came back reporting nothing at all because it filtered its own
+  output on the words that had just failed to match.
 
 A run aborts at the first failed step, with diagnostics, rather than risk
 writing into the wrong locale. Fix, then resume with `from:<locale>`.
@@ -363,51 +379,90 @@ it and reopen — the output is still there, still updating.
 
 ## When the console changes
 
-Every DOM heuristic lives in `extension/stores/cws.js`, and selectors are
-deliberately text- and role-based rather than class-based, so cosmetic
-redesigns pass through. When a step fails: click **Probe page**, read the dump,
-adjust the matching `page*` function, reload the temporary add-on, resume with
-`from:<locale>`.
+Every DOM heuristic lives in `extension/stores/cws.js` and
+`extension/stores/edge.js`, and selectors are deliberately text- and role-based
+rather than class-based, so cosmetic redesigns pass through. When a step fails:
+click **Probe page**, read the dump, adjust the matching `page*` function, reload
+the temporary add-on, resume with `from:<locale>`.
 
-Two things to know before editing that file:
+Four things to know before editing either file:
 
 - The `page*` functions are **serialised** into the page by
   `chrome.scripting.executeScript({ world: 'MAIN' })`, so each one must be
   entirely self-contained. That is why the small helpers (`visible`, `txt`,
   `trail`) are repeated in every one of them. There is no bundler; factoring
   them out would break the injection.
+- **Keep them short.** A loop that waits on the page belongs in the driver, not
+  in the injected function: a script that runs for forty-five seconds and outlives
+  a re-render dies with it and its promise never settles. That looks like a run
+  that simply stops — no error, no completion, nothing to read. From the driver,
+  the same wait becomes a timeout.
+- **Report before filtering.** A diagnostic that narrows its own output on the
+  words the search has just failed on comes back empty exactly when it is needed,
+  and an empty list cannot be told from an unreadable page. Dump everything and
+  add the counts; a dump the operator has to paste by hand is also a dump that
+  gets truncated, so make it compact rather than selective.
 - `listingUrl` pins `hl=en`. Every heading and `aria-label` regex assumes the
   English console.
 
 Supporting another store means a new `extension/stores/<id>.js` exposing the same
 surface, documented at the bottom of `cws.js`.
 
-### Partner Center (Edge) — probe-only
+### Partner Center (Edge)
 
-`stores/edge.js` exists and is registered, but only `probe` is implemented. Every
-other step returns `ok: false` with an instruction, so a run against it aborts
-instead of half-working — selectors written before reading the markup are fiction
-that looks like code.
+`stores/edge.js` is complete: descriptions, screenshots, per-page saving, and the
+language enrolment below. Everything in it was written against a dump of the real
+page rather than against a guess, which is not a style preference — three separate
+controls were missed by a selector narrower than the page, each costing a round
+trip, so **probe first** is the rule here more than anywhere.
 
-It is also structurally different from the CWS, which is why it could not be
-copied: **there is no language dropdown.** Partner Center's Store listings page is
-a table with one row per language, and each row's *Edit details* button opens a
-separate *Details for &lt;language&gt;* page — so `selectLanguage` becomes a
-navigation. Two things from Microsoft's docs are worth building around:
+It is structurally different from the Chrome Web Store, which is why it could not
+be copied:
 
-- **"Duplicate this asset for all languages"** sits under each asset. Five
-  screenshots uploaded once and duplicated beats 5 × 43 uploads, and it is the
-  store's own feature rather than a trick.
-- Screenshots cap at **6**, sized 640×480 or 1280×800; descriptions run
-  **250–10,000** characters. That ceiling is why a consuming project may need to
-  shorten its listing text for this target and not the others.
+- **There is no language dropdown.** Store listings is a table with one row per
+  language, and each row's *Edit details* button opens a separate *Details for
+  &lt;language&gt;* page — so `selectLanguage` is a navigation, and the run has to
+  return to the table between languages.
+- **Leaving a page discards it.** The CWS commits all 43 languages with one manual
+  **Save draft** at the end; here each page must be saved as it is written.
+- Screenshots cap at **6**, sized 1280×800 or 640×400 — the card's own wording;
+  descriptions run **250–10,000** characters. That ceiling is why a consuming
+  project may need to shorten its listing text for this target and not the others.
 
-To finish it: click **Probe page** against a real Store listings page and read the
-dump. Its `links` gives the route to a language page (undocumented — hence the
-`edge.edgeListingPath` override, so learning it needs no code change), `tables`
-gives the row shape and the exact button label, and `textareas` vs `editables`
-decides how the description is written, since a rich-text editor would not take
-the CWS approach. The notes at the bottom of `stores/edge.js` list the steps.
+Three things about this console cost a day between them and are worth knowing
+before touching the file.
+
+**Controls are web components.** *Save draft* is
+`<v6_he-button>Save draft</v6_he-button>`: a real `<button>` in a shadow root with
+the label slotted in from the light DOM, so neither element has the words in its
+`textContent`. Read names the way a screen reader does — `aria-label`,
+`aria-labelledby`, `title`, slot-resolved text — walk shadow roots, and treat a
+component and the control inside it as one button.
+
+**Uploading a screenshot is about time, not about the gesture.** The console
+accepts an upload roughly fifteen seconds after the previous one and not before,
+whichever way the file is handed to it. Earlier versions paid that gap by accident
+inside verification windows they believed they were spending on gestures, which is
+why the "working" gesture appeared to change from upload to upload. It is waited
+out deliberately now: `MIN_UPLOAD_GAP_MS`, owed only against an upload the run
+itself made, plus an observable — every thumbnail carrying its own per-image
+controls, which is how one the console has committed is told from one it is still
+drawing. The last upload of a language gets the same wait before the page is
+saved, which it did not until a run saved while the fifth thumbnail was still
+going up.
+
+**The count is not the check.** An upload can fail on the store's side *after* the
+thumbnail appears, leaving an error tile: right count, wrong listing. So the slot
+is verified against the filenames that were sent — Partner Center labels each
+thumbnail with its own — and a tile that does not belong is deleted by name and
+its file sent again, before the page is saved. One bad tile costs one delete and
+one upload rather than a cleared slot and five re-uploads.
+
+**Do not duplicate screenshots across languages.** The store offers it and the
+driver exposes it, but nothing calls it: a project with localized screenshots
+would overwrite 42 languages with one language's images. A language with no page
+of its own already falls back to the default one on the store side. Wire it up
+only for a project whose screenshots carry no text, and only from the base locale.
 
 It will never press **Publish**: that is `edge/edge_publish.py`'s job, and the
 review before it stays human.
@@ -433,6 +488,13 @@ One behaviour worth knowing: a language the store does not offer is **skipped an
 reported**, not fatal. Partner Center's menu carries 41 languages and Filipino is
 not among them, so aborting a 42-language pass over one that can never work would
 be the wrong call. Every other failure still stops the run.
+
+**The table renders after the page reports complete**, and both readers wait for
+it: the one that lists the languages waits for the row count to stop changing, and
+the one that opens a language waits for *its own* row. Reading once produced a run
+that printed all 42 languages and then aborted on one of them as missing — and
+which language it hit moved between runs, which is what a race looks like from the
+outside.
 
 ---
 
@@ -460,11 +522,7 @@ be the wrong call. Every other failure still stops the run.
 ## Tests
 
 ```bash
-npm test
-```
-
-```bash
-npm test                             # the add-on's pure logic (jest)
+npm test                             # the add-on (jest)
 python tests/test_cws_publish.py     # request bodies, URLs, auth-mode choice
 python tests/test_edge_publish.py    # endpoint versioning, the Location header
 python tests/test_config_parity.py   # the config loaders cannot drift apart
@@ -477,9 +535,23 @@ does the wrong thing, an upload sent to the plain `/v2` path instead of
 `{version}` and would upload whichever build was lying around, or one config
 loader learning a rule the other did not.
 
-The DOM heuristics in `extension/stores/cws.js` are not unit-testable — they
-exist to match a page nobody controls, which is what **Dry run** and **Probe
-page** are for.
+**The DOM heuristics are tested too**, against a real DOM through
+`jest-environment-jsdom` — `tests/edge-page-functions.test.js` builds the shapes
+Partner Center actually serves (a command bar of web components, a slot with an
+error tile in it, a language table that renders late) and runs the real `page*`
+functions over them. A stub would not have caught any of the bugs that made this
+necessary, because each one was a wrong belief about DOM semantics and a
+hand-written stub inherits the same belief.
+
+Two more suites cover the parts a page cannot show:
+`tests/edge-upload-escalation.test.js` fakes the page at the `executeScript`
+boundary and drives the real upload loop — including a page that answers *slowly*,
+which is the case the verify-before-escalate rule exists for — and
+`tests/screenshot-verify.test.js` does the same for the repair pass, checking that
+an error tile is removed **by name** rather than by position.
+
+What is still not testable is whether any of it matches the console today. That is
+what **Dry run** and **Probe page** are for.
 
 ## License
 
