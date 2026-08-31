@@ -317,3 +317,51 @@ describe('the wait before adding to a slot', () => {
     expect(res.slot).toMatchObject({ ok: true });
   });
 });
+
+// ── the driver's own settle, after the last upload ───────────────────────────
+//
+// The same two waits the gap uses, and for the same reasons: the observable
+// first — every thumbnail carrying its own per-image controls — then the floor,
+// because readiness is a hypothesis about what the wait is for and the gap is the
+// part three runs actually measured.
+//
+// MIN_UPLOAD_GAP_MS is reused rather than given a sibling constant: the time this
+// console needs before it will take another upload is the same time it needs to
+// finish the one before, and tuning one should tune both.
+describe('settling after the last upload', () => {
+  test('waits for the slot to report itself finished', async () => {
+    const { driver, state } = load({ readyAfter: 3 });
+    const out = await driver.settleAssets(1);
+    expect(out).toMatchObject({ ok: true, ready: true });
+    expect(state.slotChecks).toBe(4);
+  });
+
+  test('and holds the gap open from the last upload', async () => {
+    const { driver } = load({ honours: 1 });
+    await driver.uploadScreenshot(1, B64, 'p1.png');
+    const out = await driver.settleAssets(1);
+    // The upload stamped the clock, so the settle owes what is left of the gap.
+    expect(out.waitedMs).toBeGreaterThanOrEqual(GAP_MS - 1000);
+  });
+
+  test('but owes nothing when this run has uploaded nothing', async () => {
+    const { driver } = load({});
+    const out = await driver.settleAssets(1);
+    expect(out.waitedMs).toBeLessThan(1000);
+  });
+
+  // A slot that never settles must not hold the run for ever, and must say which
+  // of the two it was — finished, or merely timed out.
+  test('gives up rather than waiting for ever, and reports that it did', async () => {
+    const { driver } = load({ readyAfter: 10000 });
+    const out = await driver.settleAssets(1);
+    expect(out).toMatchObject({ ok: true, ready: false });
+  });
+
+  test('and stops early when the slot cannot be read at all', async () => {
+    const { driver, state } = load({ slotState: false });
+    const out = await driver.settleAssets(1);
+    expect(state.slotChecks).toBe(1);
+    expect(out.ready).toBe(false);
+  });
+});

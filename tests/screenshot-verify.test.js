@@ -39,14 +39,21 @@ const NAMES = ['Promo_1_fr.png', 'Promo_2_fr.png', 'Promo_3_fr.png'];
 // one is for.
 function fakeStore({ lands = (name) => name } = {}) {
   const slot = [];
-  const calls = { uploaded: [], deleted: [] };
+  const calls = { uploaded: [], deleted: [], order: [] };
   return {
     slot,
     calls,
     driver: {
       id: 'edge',
-      countScreenshots: async () => ({ ok: true, count: slot.length,
-                                       files: slot.map((n) => `Screenshot ${n}`) }),
+      countScreenshots: async () => {
+        calls.order.push('count');
+        return { ok: true, count: slot.length,
+                 files: slot.map((n) => `Screenshot ${n}`) };
+      },
+      settleAssets: async () => {
+        calls.order.push('settle');
+        return { ok: true, ready: true, waitedMs: 15000 };
+      },
       uploadScreenshot: async (tabId, b64, name) => {
         calls.uploaded.push(name);
         slot.push(lands(name, calls.uploaded.length));
@@ -187,5 +194,49 @@ describe('a store that cannot report filenames', () => {
     const progress = await run(store);
     expect(progress.join('\n')).toMatch(/names unavailable/);
     expect(progress.join('\n')).not.toMatch(/screenshots verified/);
+  });
+});
+
+// ── letting the last upload finish ───────────────────────────────────────────
+//
+// Every screenshot but the final one gets the gap this console needs, because
+// the gap is paid on the way IN to the next upload. The last one has no next
+// upload, so the run saved the page and moved to the following language while
+// its thumbnail was still going up. Nothing downstream could notice: the count
+// was right, the name was right, and what was missing happens after both.
+describe('the last upload', () => {
+  test('is given time to finish before anything is checked', async () => {
+    const store = fakeStore();
+    await run(store);
+    // The settle comes before the verification reads the slot, not after: reading
+    // an unfinished slot is how a wrong listing would get verified.
+    const firstCount = store.calls.order.indexOf('count');
+    const settle = store.calls.order.indexOf('settle');
+    expect(settle).toBeGreaterThan(-1);
+    expect(store.calls.order.slice(settle).includes('count')).toBe(true);
+    expect(settle).toBeGreaterThan(firstCount); // the uploads counted first
+  });
+
+  test('and the wait is reported, since it is time the run visibly spends', async () => {
+    const store = fakeStore();
+    const progress = await run(store);
+    expect(progress.join('\n')).toMatch(/screenshots: settled in 15\.0s/);
+  });
+
+  test('a slot that never reports itself finished says so rather than pretending', async () => {
+    const store = fakeStore();
+    store.driver.settleAssets = async () => ({ ok: true, ready: false, waitedMs: 45000 });
+    const progress = await run(store);
+    expect(progress.join('\n')).toMatch(/never reported itself finished/);
+  });
+
+  // The Chrome Web Store commits the whole listing in one manual save, so it has
+  // no per-page settling to do. A driver without the step is not made to have one.
+  test('a store with nothing to settle is not asked to', async () => {
+    const store = fakeStore();
+    delete store.driver.settleAssets;
+    const progress = await run(store);
+    expect(progress.join('\n')).toMatch(/screenshots verified: 3\/3/);
+    expect(progress.join('\n')).not.toMatch(/settled/);
   });
 });
