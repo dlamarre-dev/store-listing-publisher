@@ -422,7 +422,11 @@ async function publishLocale(driver, tabId, locale, text, opts, ctx, onProgress)
     if (!res?.ok) throw new PublishError('Description field not updated', res);
     onProgress(opts.dryRun
       ? `  description target: "${res.label}" (currently ${res.currentLength} chars)`
-      : `  description ✓ ${res.length} chars (field "${res.label}")`);
+      : `  description ✓ ${res.length} chars`);
+    // The console's own review of what was just written. A run that ends "saved"
+    // while every page carries a warning is a run that looks fine and then fails
+    // certification, so it is said out loud rather than left in a field label.
+    if (res.warning) onProgress(`  ⚠ ${res.warning}`);
   }
 
   if (opts.updateImages) {
