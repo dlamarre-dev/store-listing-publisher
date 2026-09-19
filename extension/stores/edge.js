@@ -23,7 +23,7 @@
 //   lookup here passes languageNames(locale), never locale.name alone.
 // - **Filipino is not on the menu at all.** 41 languages are offered; ours that
 //   is missing cannot have an Edge listing, which is a store limit and not a
-//   lookup failure, so pageAddLanguage says so in those words.
+//   lookup failure, so edgePageAddLanguage says so in those words.
 // - The description is a plain <textarea> (aria-label "Description ", with the
 //   trailing space) and there is no contenteditable, so the CWS write path
 //   transfers unchanged. Its maxlength is 10000, which is checked BEFORE writing:
@@ -54,7 +54,7 @@ const EDGE = {
 // SPA, so this also collects anchors and table structure. The listing lives
 // behind a link and a per-row button rather than a dropdown, and the exact paths
 // are not documented — the anchors are how we learn them instead of guessing.
-function pageProbe() {
+function edgePageProbe() {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -248,7 +248,7 @@ function pageProbe() {
   // Anything clickable, by affordance rather than by tag, shadow roots included.
   //
   // Two rounds of narrower queries each missed a control this page really has, so
-  // the probe now matches what pageSaveDraft matches: a div with a click handler
+  // the probe now matches what edgePageSaveDraft matches: a div with a click handler
   // is a button as far as the operator is concerned, and an icon-only command bar
   // button carries its label in `title` or `aria-labelledby`, neither of which the
   // old `aria-label || textContent` could read.
@@ -330,7 +330,7 @@ function pageProbe() {
 // upper right — a diagnostic that filtered itself on the same words that had
 // just failed to match, and so could not distinguish "nothing here" from
 // "here, unnamed".
-async function pageSaveDraft() {
+async function edgePageSaveDraft() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Every element on the page, shadow roots included.
@@ -538,7 +538,7 @@ async function pageSaveDraft() {
 //
 // The options are what an add-the-missing-42-languages step needs: how Partner
 // Center names each language, so our locale table can be matched against it.
-async function pageProbeAddLanguage() {
+async function edgePageProbeAddLanguage() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -628,7 +628,7 @@ async function pageProbeAddLanguage() {
 // The distinction that matters: the package makes a language AVAILABLE, it does
 // not add it. A fresh product lists one row even with 43 locales in the zip,
 // which is the store's model and not a fault in the package.
-async function pageListLanguages() {
+async function edgePageListLanguages() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -717,7 +717,7 @@ async function pageListLanguages() {
 // `names` is every label the locale might go by, because Partner Center does not
 // always use the name we do: it says Bangla for Bengali, Kiswahili for Swahili,
 // and Norwegian (Bokmål) where we say Norwegian.
-async function pageAddLanguage(names) {
+async function edgePageAddLanguage(names) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -767,7 +767,7 @@ async function pageAddLanguage(names) {
 // verifies it actually moved before reporting success — the CWS driver refuses on
 // an unconfirmed switch rather than writing into the wrong locale, and the same
 // rule matters more here, where the wrong page is a different URL entirely.
-async function pageOpenLanguage(names) {
+async function edgePageOpenLanguage(names) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -787,7 +787,7 @@ async function pageOpenLanguage(names) {
     .map(el => ({ el, m: EDIT_RE.exec(label(el)) }))
     .filter(x => x.m);
 
-  // Polled, for the same reason pageListLanguages is: Partner Center renders this
+  // Polled, for the same reason edgePageListLanguages is: Partner Center renders this
   // table after the page reports complete, so reading it once can catch it empty.
   // Here the consequence was worse than a wrong count — a run that had just
   // printed all 42 languages aborted on one of them with languagesPresent: [],
@@ -850,7 +850,7 @@ async function pageOpenLanguage(names) {
 // and a browser silently truncates at maxlength rather than refusing — so
 // without this a too-long description becomes a listing that ends mid-sentence,
 // which is far worse than an aborted run.
-function pageSetDescription(text, apply) {
+function edgePageSetDescription(text, apply) {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -964,7 +964,7 @@ function pageSetDescription(text, apply) {
 // per-image controls, "Delete screenshot <file>" among them, which is how a
 // thumbnail that is merely being previewed is told from one the console has
 // accepted. Ready means every thumbnail has them.
-function pageSlotState() {
+function edgePageSlotState() {
   const deepAll = (root, out) => {
     out = out || [];
     for (const el of root.querySelectorAll('*')) {
@@ -1011,7 +1011,7 @@ function pageSlotState() {
   };
 }
 
-function pageCountScreenshots() {
+function edgePageCountScreenshots() {
   const root = (() => {
     const direct = document.querySelector('screenshots');
     if (direct) return direct;
@@ -1065,7 +1065,7 @@ function pageCountScreenshots() {
 //
 // And waiting on the count rather than on the click is what makes the caller's
 // loop safe — Partner Center removes the thumbnail asynchronously.
-async function pageDeleteOneScreenshot(only) {
+async function edgePageDeleteOneScreenshot(only) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const deepAll = (root, out) => {
     out = out || [];
@@ -1226,7 +1226,7 @@ async function pageDeleteOneScreenshot(only) {
 //
 // The visible "Add Image" affordance is never clicked: it opens the OS file
 // picker, which no script can fill.
-function pageApplyUpload(b64, filename, mechanism) {
+function edgePageApplyUpload(b64, filename, mechanism) {
   const deepAll = (root, out) => {
     out = out || [];
     for (const el of root.querySelectorAll('*')) {
@@ -1348,7 +1348,7 @@ function pageApplyUpload(b64, filename, mechanism) {
 // So this reports the whole slot: every file input with its caption and whether
 // anything is sitting in it, every thumbnail, and every control. Nothing here is
 // filtered on what the caller expected to find.
-function pageDescribeSlot() {
+function edgePageDescribeSlot() {
   const deepAll = (root, out) => {
     out = out || [];
     for (const el of root.querySelectorAll('*')) {
@@ -1425,7 +1425,7 @@ function pageDescribeSlot() {
 // theirs "Duplicate this logo for all languages" and "Duplicate this promotional
 // tile for all languages", so the screenshot wording is predictable but not
 // observed — and inside the right component it does not need to be.
-async function pageDuplicateScreenshots() {
+async function edgePageDuplicateScreenshots() {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const root = (() => {
     const direct = document.querySelector('screenshots');
@@ -1542,7 +1542,7 @@ const MIN_UPLOAD_GAP_MS = 15000;
 let lastUploadAt = 0;
 let learnedLatency = null;
 
-async function loadLatency() {
+async function edgeLoadLatency() {
   if (learnedLatency !== null) return;
   learnedLatency = 0;
   try {
@@ -1560,14 +1560,14 @@ async function loadLatency() {
 //
 // Floored at 3s so a fast console cannot make the probe flaky, and capped at 10s
 // because past that the probe costs more than the escalation it is avoiding.
-async function probeWindowMs() {
-  await loadLatency();
+async function edgeProbeWindowMs() {
+  await edgeLoadLatency();
   if (!learnedLatency) return PROBE_MIN_MS;
   return Math.min(PROBE_MAX_MS, Math.max(PROBE_MIN_MS, learnedLatency * 4));
 }
 
-async function rememberLatency(ms) {
-  await loadLatency();
+async function edgeRememberLatency(ms) {
+  await edgeLoadLatency();
   if (!ms || ms <= learnedLatency) return;
   learnedLatency = ms;
   try { await chrome.storage.local.set({ [LATENCY_KEY]: ms }); }
@@ -1587,7 +1587,7 @@ async function edgeExec(tabId, func, args = []) {
 // is declared with const in a script the manifest loads after this file, and
 // depending on the evaluation order of two classic scripts to be reachable at call
 // time is a coupling that works until someone reorders the manifest.
-async function goToListings(tabId, listingUrl) {
+async function edgeGoToListings(tabId, listingUrl) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   await chrome.tabs.update(tabId, { url: listingUrl });
   for (let i = 0; i < 40; i++) {
@@ -1641,21 +1641,21 @@ const EdgeDriver = {
   // language's details page — that half reports ok:false and the rest is
   // unaffected.
   async probe(tabId) {
-    const page = await edgeExec(tabId, pageProbe);
-    const addLanguage = await edgeExec(tabId, pageProbeAddLanguage);
+    const page = await edgeExec(tabId, edgePageProbe);
+    const addLanguage = await edgeExec(tabId, edgePageProbeAddLanguage);
     return { ...(page || {}), addLanguage };
   },
 
   // Which languages have actually been added to the listing. Not part of the
   // driver interface — the orchestration does not call it — but it is how a run
   // can report "42 of your 43 are not added yet" instead of failing 42 times.
-  listLanguages: tabId => edgeExec(tabId, pageListLanguages),
+  listLanguages: tabId => edgeExec(tabId, edgePageListLanguages),
 
   // Adds a language to the listing. Not part of the driver interface — the
   // orchestration has no concept of a store where a locale must be enrolled
   // before it can be written — but it is what makes 42 of them reachable.
   addLanguage: (tabId, locale) =>
-    edgeExec(tabId, pageAddLanguage, [languageNames(locale)]),
+    edgeExec(tabId, edgePageAddLanguage, [languageNames(locale)]),
 
   // A navigation, not a dropdown pick: this store has no in-place switch. Passes
   // every alias, because Partner Center's name is not always ours.
@@ -1667,20 +1667,20 @@ const EdgeDriver = {
   // it the driver falls back to clicking whatever is on the current page, which is
   // right for the first locale and for a probe.
   async selectLanguage(tabId, locale, ctx) {
-    if (ctx?.listingUrl) await goToListings(tabId, ctx.listingUrl);
-    return edgeExec(tabId, pageOpenLanguage, [languageNames(locale)]);
+    if (ctx?.listingUrl) await edgeGoToListings(tabId, ctx.listingUrl);
+    return edgeExec(tabId, edgePageOpenLanguage, [languageNames(locale)]);
   },
 
   // Each language is its own page here, and leaving one discards what was typed.
   // The orchestration calls this after writing, on stores that expose it.
-  saveDraft: tabId => edgeExec(tabId, pageSaveDraft),
+  saveDraft: tabId => edgeExec(tabId, edgePageSaveDraft),
 
   setDescription: (tabId, text, apply) =>
-    edgeExec(tabId, pageSetDescription, [text, apply]),
+    edgeExec(tabId, edgePageSetDescription, [text, apply]),
 
-  countScreenshots: tabId => edgeExec(tabId, pageCountScreenshots),
+  countScreenshots: tabId => edgeExec(tabId, edgePageCountScreenshots),
   deleteOneScreenshot: (tabId, scope, only) =>
-    edgeExec(tabId, pageDeleteOneScreenshot, [only || null]),
+    edgeExec(tabId, edgePageDeleteOneScreenshot, [only || null]),
 
   // Copies one language's screenshots to all the others — the store's own
   // feature.
@@ -1690,12 +1690,12 @@ const EdgeDriver = {
   // with one language's images. It is only ever right from the default locale,
   // and only for a project whose screenshots carry no text — which is not this
   // one. A caller that wires it up should check both.
-  duplicateScreenshots: tabId => edgeExec(tabId, pageDuplicateScreenshots),
+  duplicateScreenshots: tabId => edgeExec(tabId, edgePageDuplicateScreenshots),
 
   // Optional, and the orchestration calls it only when an upload reports success
   // and the count does not follow. A bare timeout has now hidden two different
   // causes; this is what turns the next one into one round trip instead of three.
-  describeAssets: tabId => edgeExec(tabId, pageDescribeSlot),
+  describeAssets: tabId => edgeExec(tabId, edgePageDescribeSlot),
 
   // Waits for the slot to finish with the LAST upload.
   //
@@ -1718,7 +1718,7 @@ const EdgeDriver = {
     let ready = false;
     const polls = Math.ceil(SETTLE_MAX_MS / POLL_MS);
     for (let i = 0; i < polls; i += 1) {
-      const state = await edgeExec(tabId, pageSlotState);
+      const state = await edgeExec(tabId, edgePageSlotState);
       if (!state || state.ok !== true) break;
       if (state.ready) { ready = true; break; }
       await edgeSleep(POLL_MS);
@@ -1756,7 +1756,7 @@ const EdgeDriver = {
   // its time is not overtaken by the next one and the same file uploaded twice.
   async uploadScreenshot(tabId, b64, filename) {
     const shots = async () => {
-      const res = await edgeExec(tabId, pageCountScreenshots);
+      const res = await edgeExec(tabId, edgePageCountScreenshots);
       return res && res.ok ? res.count : null;
     };
     const before = await shots();
@@ -1788,7 +1788,7 @@ const EdgeDriver = {
       // is merely previewing.
       const settlePolls = Math.ceil(SETTLE_MAX_MS / POLL_MS);
       for (let i = 1; i <= settlePolls; i += 1) {
-        const state = await edgeExec(tabId, pageSlotState);
+        const state = await edgeExec(tabId, edgePageSlotState);
         if (!state || state.ok !== true) break;
         if (state.ready) break;
         await edgeSleep(POLL_MS);
@@ -1809,12 +1809,12 @@ const EdgeDriver = {
       }
     }
 
-    const probeMs = await probeWindowMs();
+    const probeMs = await edgeProbeWindowMs();
     const order = [...FILL_GESTURES, DROP_GESTURE];
 
     for (let n = 0; n < order.length; n += 1) {
       const mechanism = order[n];
-      const applied = await edgeExec(tabId, pageApplyUpload, [b64, filename, mechanism]);
+      const applied = await edgeExec(tabId, edgePageApplyUpload, [b64, filename, mechanism]);
       tried.push({ mechanism, ok: applied ? applied.ok === true : false,
                    step: applied ? applied.step : 'no-result',
                    chose: applied ? applied.chose : null });
@@ -1847,7 +1847,7 @@ const EdgeDriver = {
             + 'duplicate has to be removed by hand before the run continues.',
         };
       }
-      if (isFirstFill) await rememberLatency(tookMs);
+      if (isFirstFill) await edgeRememberLatency(tookMs);
       lastUploadAt = Date.now();
       return { ok: true, filename, via: mechanism, before, after, tried,
                chose: applied.chose, tookMs, settleMs };
@@ -1861,7 +1861,7 @@ const EdgeDriver = {
       after: await shots(),
       tried,
       settleMs,
-      slot: await edgeExec(tabId, pageSlotState),
+      slot: await edgeExec(tabId, edgePageSlotState),
       detail: 'The file was put into the slot twice and dropped on it once, and '
         + 'the page took none of them. Each attempt was verified against the '
         + 'thumbnail count before the next: the first fill against a short probe, '
@@ -1879,14 +1879,14 @@ const EdgeDriver = {
 //   segment as a login (it does not — it looks for /public/login).
 // - The table's row buttons are aria-labelled "Edit <Language> language details
 //   page" and "Remove <Language> language", with the language name in English.
-//   pageListLanguages and pageOpenLanguage are written against exactly that.
+//   edgePageListLanguages and edgePageOpenLanguage are written against exactly that.
 // - **This table renders after the page reports complete, and both readers have to
 //   wait for it.** A run printed all 42 languages and then aborted on one of them
 //   with languagesPresent: [] — and which language it hit moved between runs,
 //   Spanish twice and then Arabic, which is the signature of a race rather than of
-//   a missing row. pageOpenLanguage waits for ITS OWN row, because the table can
+//   a missing row. edgePageOpenLanguage waits for ITS OWN row, because the table can
 //   arrive in pieces and a first row is no evidence the wanted one has come;
-//   pageListLanguages waits for the count to stop changing, because a
+//   edgePageListLanguages waits for the count to stop changing, because a
 //   half-rendered table read as complete is worse than an empty one — enrolment
 //   takes the absent rows for absent languages and adds languages that exist.
 // - textareas, editables, inputs, fileInputs and images were ALL empty on this

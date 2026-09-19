@@ -276,3 +276,44 @@ describe('the manifest loads every driver', () => {
       .toBeLessThan(loaded.indexOf('stores/edge.js'));
   });
 });
+
+// The manifest loads every stores/ file into ONE shared background scope, in its
+// own order, and a top-level `function` is var-scoped: two files declaring
+// pageSetDescription is not an error, the file loaded last simply wins, and the
+// driver that lost goes on calling its own method while the other store's DOM
+// code is what gets injected into its page.
+//
+// That is not a hypothetical. A CWS run selected Arabic correctly and then
+// aborted on Partner Center's "no-description-field" diagnostics, because
+// stores/cws.js and stores/edge.js both declared pageSetDescription, pageProbe,
+// pageCountScreenshots and pageDeleteOneScreenshot — and stores/edge.js loads
+// second. Nothing else could have caught it: each driver's own tests pass, the
+// surface is intact, and the wrong function has the right signature.
+//
+// Top-level `const` needs no such guard: a duplicate there is a SyntaxError the
+// background page fails loudly on. Function declarations are the silent half, so
+// they carry the store id, and this is what says so.
+describe('the shared background scope the manifest loads store files into', () => {
+  const storeFiles = SCRIPTS.filter((f) => f.startsWith('stores/'));
+  const declarations = (file) => [...fs
+    .readFileSync(path.join(ROOT, 'extension', file), 'utf8')
+    .matchAll(/^(?:async\s+)?function\s+([A-Za-z0-9_$]+)/gm)].map((m) => m[1]);
+
+  test.each(storeFiles)('%s prefixes its functions with its store id', (file) => {
+    const id = path.basename(file, '.js');
+    const unprefixed = declarations(file)
+      .filter((name) => !name.toLowerCase().startsWith(id));
+    expect({ file, unprefixed }).toEqual({ file, unprefixed: [] });
+  });
+
+  test('no two store files declare the same function', () => {
+    const seen = new Map();
+    for (const file of storeFiles) {
+      for (const name of declarations(file)) {
+        seen.set(name, [...(seen.get(name) || []), file]);
+      }
+    }
+    const clashes = [...seen].filter(([, files]) => files.length > 1);
+    expect(clashes).toEqual([]);
+  });
+});

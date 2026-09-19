@@ -71,10 +71,10 @@ function loadPageFns(html, onTick) {
   };
   const sources = SCRIPTS.map(
     (f) => fs.readFileSync(path.join(__dirname, '..', 'extension', f), 'utf8'));
-  sources.push('globalThis.__pages = { pageSaveDraft, pageProbe, pageUploadScreenshot,'
-    + ' pageCountScreenshots, pageDeleteOneScreenshot, pageDuplicateScreenshots,'
-    + ' pageListLanguages, pageDescribeSlot, pageApplyUpload,'
-    + ' pageOpenLanguage, pageSetDescription };');
+  sources.push('globalThis.__pages = { edgePageSaveDraft, edgePageProbe,'
+    + ' edgePageCountScreenshots, edgePageDeleteOneScreenshot, edgePageDuplicateScreenshots,'
+    + ' edgePageListLanguages, edgePageDescribeSlot, edgePageApplyUpload,'
+    + ' edgePageOpenLanguage, edgePageSetDescription };');
   vm.runInContext(sources.join('\n;\n'), vm.createContext(sandbox),
                   { filename: 'stores/*.js' });
   return sandbox.__pages;
@@ -104,37 +104,37 @@ function addThumb(sel, alt) {
 
 describe('the name a control is found by', () => {
   test('is its aria-label', async () => {
-    const { pageSaveDraft } = loadPageFns('<button aria-label="Save draft"></button>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
+    const { edgePageSaveDraft } = loadPageFns('<button aria-label="Save draft"></button>');
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
     expect(clicked().tagName).toBe('BUTTON');
   });
 
   // The failure. A command bar button whose only label is a tooltip.
   test('or its title, which is where an icon-only button keeps it', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<button title="Save draft"><svg></svg></button>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
     expect(clicked()).not.toBeNull();
   });
 
   test('or the element aria-labelledby points at', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<span id="lbl">Save draft</span><button aria-labelledby="lbl"></button>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
     expect(clicked().tagName).toBe('BUTTON');
   });
 
   test('or the alt text of the icon inside it', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<div role="button"><img alt="Save draft" src="x.png"></div>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, label: 'Save draft' });
   });
 });
 
 describe('the wording it will accept', () => {
   const finds = async (html) => {
-    const { pageSaveDraft } = loadPageFns(html);
-    return pageSaveDraft();
+    const { edgePageSaveDraft } = loadPageFns(html);
+    return edgePageSaveDraft();
   };
 
   test.each(['Save draft', 'Save', 'Save as draft', 'Save and continue'])(
@@ -163,26 +163,26 @@ describe('what counts as a control', () => {
   // Partner Center's form ids say Angular Formly; its shell need not be the same
   // technology, and querySelectorAll stops at a shadow boundary.
   test('includes a button inside a shadow root', async () => {
-    const { pageSaveDraft } = loadPageFns('<div id="host"></div>');
+    const { edgePageSaveDraft } = loadPageFns('<div id="host"></div>');
     const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
     shadow.innerHTML = '<button title="Save draft"></button>';
     shadow.querySelector('button').addEventListener(
       'click', (e) => e.target.setAttribute('data-clicked', '1'));
 
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
     expect(shadow.querySelector('[data-clicked]')).not.toBeNull();
   });
 
   test('includes a div with a click affordance, not just real buttons', async () => {
-    const { pageSaveDraft } = loadPageFns('<div tabindex="0">Save draft</div>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
+    const { edgePageSaveDraft } = loadPageFns('<div tabindex="0">Save draft</div>');
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'saved' });
     expect(clicked().tagName).toBe('DIV');
   });
 
   test('but not a hidden one', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<button data-offscreen title="Save draft"></button>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: false, step: 'no-save-control' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: false, step: 'no-save-control' });
   });
 });
 
@@ -203,33 +203,33 @@ function commandBarButton(label, opts) {
 
 describe('a command bar built out of web components', () => {
   test('is named by the label slotted into it', async () => {
-    const { pageSaveDraft } = loadPageFns('');
+    const { edgePageSaveDraft } = loadPageFns('');
     commandBarButton('Save draft');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'saved', label: 'Save draft' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'saved', label: 'Save draft' });
   });
 
   // The host carries the name; the handler is on the control inside. Clicking the
   // host alone dispatches an event the component never listens for — a save that
   // silently does nothing, which is the exact failure this step exists to prevent.
   test('is clicked on the control inside, not only on the host', async () => {
-    const { pageSaveDraft } = loadPageFns('');
+    const { edgePageSaveDraft } = loadPageFns('');
     const { inner } = commandBarButton('Save draft');
     let pressed = 0;
     inner.addEventListener('click', () => { pressed += 1; });
-    await pageSaveDraft();
+    await edgePageSaveDraft();
     expect(pressed).toBe(1);
   });
 
   test('and a greyed-out inner control still reads as nothing to save', async () => {
-    const { pageSaveDraft } = loadPageFns('');
+    const { edgePageSaveDraft } = loadPageFns('');
     commandBarButton('Save draft', { disabled: true });
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'nothing-to-save' });
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'nothing-to-save' });
   });
 
   test('the probe sees it too', async () => {
-    const { pageProbe } = loadPageFns('');
+    const { edgePageProbe } = loadPageFns('');
     commandBarButton('Save draft');
-    expect(pageProbe().buttons).toContain('Save draft');
+    expect(edgePageProbe().buttons).toContain('Save draft');
   });
 
   // Once, not twice. The host and the <button> inside it are the same button to a
@@ -237,9 +237,9 @@ describe('a command bar built out of web components', () => {
   // draft", "Close", "Close" — every control doubled, and a dump the operator has
   // to paste by hand is then twice as likely to be truncated.
   test('and lists it once, not once per layer', async () => {
-    const { pageProbe } = loadPageFns('');
+    const { edgePageProbe } = loadPageFns('');
     commandBarButton('Save draft');
-    const { buttons, shell } = pageProbe();
+    const { buttons, shell } = edgePageProbe();
     expect(buttons.filter((b) => b === 'Save draft')).toHaveLength(1);
     expect(shell.clickable).toBe(1);
   });
@@ -256,8 +256,8 @@ describe('when there is no save control', () => {
   // submit|draft|apply|done, the same words the search had just failed on, so it
   // came back empty exactly when it was needed.
   test('every control is listed, unfiltered', async () => {
-    const { pageSaveDraft } = loadPageFns(PAGE);
-    const names = (await pageSaveDraft()).candidates
+    const { edgePageSaveDraft } = loadPageFns(PAGE);
+    const names = (await edgePageSaveDraft()).candidates
       .map((line) => line.split(' :: ')[1]).sort();
     expect(names)
       .toEqual(['Add a language', 'Availability', 'Delete screenshot', 'Publish']);
@@ -266,8 +266,8 @@ describe('when there is no save control', () => {
   // The bug that cost the second: only the *named* controls were listed, and the
   // real page had 19 nameless ones — the one place a save button could still be.
   test('including the ones with no name at all', async () => {
-    const { pageSaveDraft } = loadPageFns('<button></button><button title="Publish"></button>');
-    const out = await pageSaveDraft();
+    const { edgePageSaveDraft } = loadPageFns('<button></button><button title="Publish"></button>');
+    const out = await edgePageSaveDraft();
     expect(out.candidates).toHaveLength(2);
     expect(out.candidates.some((l) => l.endsWith('(no name)'))).toBe(true);
     expect(out.clickable).toBe(2);
@@ -282,17 +282,17 @@ describe('when there is no save control', () => {
   // The case that matters is a control whose own name is something else, so the
   // name match cannot reach it while the label sits in plain sight inside it.
   test('a save label inside a differently-named control marks that control', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<div role="button" aria-label="Commands"><span class="lbl">Save draft</span></div>');
-    const out = await pageSaveDraft();
+    const out = await edgePageSaveDraft();
     expect(out.step).toBe('no-save-control');
     expect(out.saveWords[0].chain).toMatch(/^SPAN\.lbl < DIV\* </);
   });
 
   test('a save label with no clickable ancestor is still reported', async () => {
-    const { pageSaveDraft } = loadPageFns(
+    const { edgePageSaveDraft } = loadPageFns(
       '<div class="bar"><span class="lbl">Save draft</span></div>');
-    const out = await pageSaveDraft();
+    const out = await edgePageSaveDraft();
     expect(out.saveWords).toHaveLength(1);
     expect(out.saveWords[0].text).toBe('Save draft');
     expect(out.saveWords[0].chain).toMatch(/^SPAN\.lbl < DIV\.bar </);
@@ -302,8 +302,8 @@ describe('when there is no save control', () => {
   // executeScript runs in the top frame only, so a control in an iframe is a
   // different fix — reachable, but not by widening a selector.
   test('and frames are reported rather than searched', async () => {
-    const { pageSaveDraft } = loadPageFns('<iframe src="/inner" name="app"></iframe>');
-    const out = await pageSaveDraft();
+    const { edgePageSaveDraft } = loadPageFns('<iframe src="/inner" name="app"></iframe>');
+    const out = await edgePageSaveDraft();
     expect(out.frames).toEqual([{ src: '/inner', name: 'app' }]);
   });
 });
@@ -313,8 +313,8 @@ describe('a Save that is greyed out', () => {
   // held what we were about to write. Aborting there would stop a 43-language run
   // over a page that is already in the state we wanted.
   test('reads as nothing to save, not as a failure', async () => {
-    const { pageSaveDraft } = loadPageFns('<button title="Save draft" disabled></button>');
-    expect(await pageSaveDraft()).toMatchObject({ ok: true, step: 'nothing-to-save' });
+    const { edgePageSaveDraft } = loadPageFns('<button title="Save draft" disabled></button>');
+    expect(await edgePageSaveDraft()).toMatchObject({ ok: true, step: 'nothing-to-save' });
     expect(clicked()).toBeNull();
   });
 });
@@ -335,23 +335,23 @@ describe('the probe and the four asset slots', () => {
   };
 
   test('finds a file input inside a component, not just the light-DOM ones', () => {
-    const { pageProbe } = loadPageFns('<input type="file" accept=".png">');
+    const { edgePageProbe } = loadPageFns('<input type="file" accept=".png">');
     slot('Screenshots');
-    expect(pageProbe().fileInputs).toHaveLength(2);
+    expect(edgePageProbe().fileInputs).toHaveLength(2);
   });
 
   test('and reports the component chain above each one', () => {
-    const { pageProbe } = loadPageFns('');
+    const { edgePageProbe } = loadPageFns('');
     slot('Screenshots');
-    const [input] = pageProbe().fileInputs;
+    const [input] = edgePageProbe().fileInputs;
     expect(input.chain).toMatch(/^INPUT < DIV\.drop < ASSET-UPLOAD/);
   });
 
   test('and the caption beside it, which is what tells the slots apart', () => {
-    const { pageProbe } = loadPageFns('');
+    const { edgePageProbe } = loadPageFns('');
     slot('Store logo');
     slot('Screenshots');
-    expect(pageProbe().fileInputs.map((f) => f.label))
+    expect(edgePageProbe().fileInputs.map((f) => f.label))
       .toEqual(['Store logo', 'Screenshots']);
   });
 });
@@ -361,15 +361,15 @@ describe('the probe', () => {
   // the same way — a probe blind to icon-only buttons sends the operator back for
   // a second dump that is just as empty as the first.
   test('reads the same names the save step does', async () => {
-    const { pageProbe } = loadPageFns(
+    const { edgePageProbe } = loadPageFns(
       '<button title="Save draft"></button><button aria-label="Publish"></button>');
-    expect(pageProbe().buttons.sort()).toEqual(['Publish', 'Save draft']);
+    expect(edgePageProbe().buttons.sort()).toEqual(['Publish', 'Save draft']);
   });
 
   test('and reports what it walked', async () => {
-    const { pageProbe } = loadPageFns('<div id="h"></div><button></button>');
+    const { edgePageProbe } = loadPageFns('<div id="h"></div><button></button>');
     document.getElementById('h').attachShadow({ mode: 'open' });
-    const { shell } = pageProbe();
+    const { shell } = edgePageProbe();
     expect(shell.shadowRoots).toBe(1);
     expect(shell.clickable).toBe(1);
     expect(shell.unnamed).toBe(1);
@@ -418,23 +418,23 @@ describe('the screenshot slot', () => {
   };
 
   test('counts only what is in it', () => {
-    const { pageCountScreenshots } = loadPageFns('');
+    const { edgePageCountScreenshots } = loadPageFns('');
     page({ shots: 2 });
-    expect(pageCountScreenshots()).toMatchObject({ ok: true, count: 2 });
+    expect(edgePageCountScreenshots()).toMatchObject({ ok: true, count: 2 });
   });
 
   test('and reports the filenames, which is how a re-run knows what is there', () => {
-    const { pageCountScreenshots } = loadPageFns('');
+    const { edgePageCountScreenshots } = loadPageFns('');
     page({ shots: 2 });
-    expect(pageCountScreenshots().files)
+    expect(edgePageCountScreenshots().files)
       .toEqual(['Screenshot shot0.png', 'Screenshot shot1.png']);
   });
 
   test('uploading fills the slot input, never the logo one', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     page();
     const b64 = Buffer.from('PNGDATA').toString('base64');
-    expect(pageApplyUpload(b64, 'Promo_1_fr.png', 1))
+    expect(edgePageApplyUpload(b64, 'Promo_1_fr.png', 1))
       .toMatchObject({ ok: true, filename: 'Promo_1_fr.png' });
 
     const [logoInput, slotInput] = document.querySelectorAll('input[type="file"]');
@@ -443,7 +443,7 @@ describe('the screenshot slot', () => {
   });
 
   test('deleting clicks a Delete inside the slot, not the logo Delete', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     page({ shots: 1 });
     const logoDelete = document.querySelector('section [aria-label="Delete"]');
     let logoClicks = 0;
@@ -454,16 +454,16 @@ describe('the screenshot slot', () => {
     document.querySelector('screenshots [aria-label="Delete"]')
       .addEventListener('click', (e) => e.target.closest('.asset').remove());
 
-    expect(await pageDeleteOneScreenshot()).toMatchObject({ ok: true, before: 1, after: 0 });
+    expect(await edgePageDeleteOneScreenshot()).toMatchObject({ ok: true, before: 1, after: 0 });
     expect(logoClicks).toBe(0);
   });
 
   test('duplicating presses the slot button, not the logo one', async () => {
-    const { pageDuplicateScreenshots } = loadPageFns('');
+    const { edgePageDuplicateScreenshots } = loadPageFns('');
     page({ shots: 1 });
     let pressed = null;
     document.addEventListener('click', (e) => { pressed = e.target.textContent; }, true);
-    await pageDuplicateScreenshots();
+    await edgePageDuplicateScreenshots();
     expect(pressed).toBe('Duplicate this screenshot for all languages');
   });
 
@@ -472,19 +472,19 @@ describe('the screenshot slot', () => {
   test('every step refuses when the component is not on the page', async () => {
     const fns = loadPageFns('');
     page({ withSlot: false });
-    expect(fns.pageCountScreenshots()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
-    expect(fns.pageApplyUpload('AAA=', 'x.png', 1))
+    expect(fns.edgePageCountScreenshots()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+    expect(fns.edgePageApplyUpload('AAA=', 'x.png', 1))
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
-    expect(await fns.pageDeleteOneScreenshot())
+    expect(await fns.edgePageDeleteOneScreenshot())
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
-    expect(await fns.pageDuplicateScreenshots())
+    expect(await fns.edgePageDuplicateScreenshots())
       .toMatchObject({ ok: false, step: 'no-screenshot-slot' });
   });
 
   test('and the refusal shows the inputs it would not choose between', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     page({ withSlot: false });
-    const out = pageApplyUpload('AAA=', 'x.png', 1);
+    const out = edgePageApplyUpload('AAA=', 'x.png', 1);
     expect(out.fileInputs).toHaveLength(1);
     expect(out.fileInputs[0].chain).toMatch(/SECTION/);
   });
@@ -504,33 +504,33 @@ describe('the language table', () => {
   const ADD = '<button>Add a language</button>';
 
   test('is read when it is there', async () => {
-    const { pageListLanguages } = loadPageFns(ROW('French') + ADD);
-    const out = await pageListLanguages();
+    const { edgePageListLanguages } = loadPageFns(ROW('French') + ADD);
+    const out = await edgePageListLanguages();
     expect(out).toMatchObject({ ok: true, canAdd: true });
     expect(out.languages.map((l) => l.language)).toEqual(['French']);
   });
 
   // The bug: neither rows nor the control, because nothing had rendered yet.
   test('refuses to call an unrendered page an empty listing', async () => {
-    const { pageListLanguages } = loadPageFns('<div>loading</div>');
-    expect(await pageListLanguages())
+    const { edgePageListLanguages } = loadPageFns('<div>loading</div>');
+    expect(await edgePageListLanguages())
       .toMatchObject({ ok: false, step: 'listing-not-rendered' });
   });
 
   // A brand-new listing really can have no languages. The control is what says
   // the view rendered, so this stays a success.
   test('but a rendered page with no rows is genuinely empty', async () => {
-    const { pageListLanguages } = loadPageFns(ADD);
-    expect(await pageListLanguages()).toMatchObject({ ok: true, languages: [] });
+    const { edgePageListLanguages } = loadPageFns(ADD);
+    expect(await edgePageListLanguages()).toMatchObject({ ok: true, languages: [] });
   });
 
   test('and it waits for rows that arrive late', async () => {
     let ticks = 0;
-    const { pageListLanguages } = loadPageFns('<div>loading</div>', () => {
+    const { edgePageListLanguages } = loadPageFns('<div>loading</div>', () => {
       ticks += 1;
       if (ticks === 3) document.body.innerHTML = ROW('English') + ROW('French') + ADD;
     });
-    const out = await pageListLanguages();
+    const out = await edgePageListLanguages();
     expect(out.languages.map((l) => l.language)).toEqual(['English', 'French']);
   });
 });
@@ -584,9 +584,9 @@ describe('deleting a screenshot', () => {
   };
 
   test('presses the confirmation inside the component dialog', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     const pressed = setup();
-    expect(await pageDeleteOneScreenshot())
+    expect(await edgePageDeleteOneScreenshot())
       .toMatchObject({ ok: true, before: 1, after: 0, confirmed: 'Delete' });
     expect(pressed).toEqual(['Delete']);
   });
@@ -594,38 +594,38 @@ describe('deleting a screenshot', () => {
   // The one that must never be pressed: it leaves the screenshot in place while
   // the run believes it is gone, and the next upload then overflows the cap of six.
   test('never presses Cancel', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     const pressed = setup({ confirmLabels: ['Cancel', 'Delete'] });
-    await pageDeleteOneScreenshot();
+    await edgePageDeleteOneScreenshot();
     expect(pressed).toEqual(['Delete']);
   });
 
   test('and reports what the dialog offered when nothing affirms', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     setup({ confirmLabels: ['Cancel', 'Close'] });
-    const out = await pageDeleteOneScreenshot();
+    const out = await edgePageDeleteOneScreenshot();
     expect(out).toMatchObject({ ok: false, step: 'no-confirm-control', before: 1 });
     expect(out.dialogs[0]).toMatchObject({ tag: 'SHELL_HE-DIALOG' });
     expect(out.dialogs[0].buttons).toEqual(['Cancel', 'Close']);
   });
 
   test('and says so when the confirmation did not take', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     setup({ removes: false });
-    expect(await pageDeleteOneScreenshot()).toMatchObject({
+    expect(await edgePageDeleteOneScreenshot()).toMatchObject({
       ok: false, step: 'delete-did-not-take', sawDialog: true, confirmed: 'Delete',
     });
   });
 
   test('and when no dialog appeared at all', async () => {
-    const { pageDeleteOneScreenshot } = loadPageFns('');
+    const { edgePageDeleteOneScreenshot } = loadPageFns('');
     document.body.innerHTML = `<screenshots><div class="asset">
       <img alt="Screenshot shot0.png" src="x.png">
       <button aria-label="Delete"></button></div></screenshots>`;
     document.querySelectorAll('img').forEach((img) => {
       Object.defineProperty(img, 'clientWidth', { value: 200, configurable: true });
     });
-    const out = await pageDeleteOneScreenshot();
+    const out = await edgePageDeleteOneScreenshot();
     expect(out).toMatchObject({ ok: false, step: 'delete-did-not-take', sawDialog: false });
     expect(out.detail).toMatch(/does ask for confirmation/);
   });
@@ -649,7 +649,7 @@ describe('deleting a screenshot', () => {
 // carries the page state so the next one is one round trip, not three.
 describe('the slot description', () => {
   test('says what is in each uploader and what is on screen', () => {
-    const { pageDescribeSlot } = loadPageFns('');
+    const { edgePageDescribeSlot } = loadPageFns('');
     document.body.innerHTML = `<screenshots>
       <div class="shot"><img alt="Screenshot p1.png" src="x">
         <button aria-label="Delete"></button>
@@ -662,7 +662,7 @@ describe('the slot description', () => {
     Object.defineProperty(document.querySelector('.a'), 'files',
       { value: [{ name: 'stuck.png' }], configurable: true });
 
-    const out = pageDescribeSlot();
+    const out = edgePageDescribeSlot();
     expect(out.fileInputs).toHaveLength(2);
     // The distinction that matters: an uploader that never drained is a different
     // problem from one that never received a second file.
@@ -674,8 +674,8 @@ describe('the slot description', () => {
   });
 
   test('and refuses rather than describing the wrong page', () => {
-    const { pageDescribeSlot } = loadPageFns('<div>somewhere else</div>');
-    expect(pageDescribeSlot()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
+    const { edgePageDescribeSlot } = loadPageFns('<div>somewhere else</div>');
+    expect(edgePageDescribeSlot()).toMatchObject({ ok: false, step: 'no-screenshot-slot' });
   });
 });
 
@@ -693,7 +693,7 @@ describe('the slot description', () => {
 
 // ── the three gestures ───────────────────────────────────────────────────────
 //
-// pageApplyUpload makes ONE gesture and returns. It carried the verify-and-
+// edgePageApplyUpload makes ONE gesture and returns. It carried the verify-and-
 // escalate loop until a run stopped after two screenshots with no error at all:
 // an injected script that runs for 45 seconds and outlives a re-render dies with
 // it, and its promise never settles. The loop is the driver's now; what is left
@@ -721,10 +721,10 @@ describe('the three upload gestures', () => {
   };
 
   test('1 is a file picker: the input is filled, then input and change', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     const input = slot();
     const events = seen();
-    expect(pageApplyUpload(b64, 'p.png', 1)).toMatchObject({ ok: true, mechanism: 1 });
+    expect(edgePageApplyUpload(b64, 'p.png', 1)).toMatchObject({ ok: true, mechanism: 1 });
     expect(input.files[0].name).toBe('p.png');
     expect(events).toEqual(['input', 'change']);
   });
@@ -733,38 +733,38 @@ describe('the three upload gestures', () => {
   // point: a "drop" that quietly assigns files is just mechanism 1 again, and
   // would make the escalation look like it had found something it had not.
   test('2 is a drop on the card, and leaves the input alone', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     const input = slot();
     const events = seen();
-    expect(pageApplyUpload(b64, 'p.png', 2)).toMatchObject({ ok: true, mechanism: 2 });
+    expect(edgePageApplyUpload(b64, 'p.png', 2)).toMatchObject({ ok: true, mechanism: 2 });
     expect(input.files).toBeNull();
     expect(events).toEqual(['dragenter', 'dragover', 'drop']);
   });
 
   test('and the drop carries the file, not just the event', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     slot();
     let dropped = null;
     document.querySelector('.card').addEventListener('drop', (e) => {
       dropped = e.dataTransfer.files[0].name;
     });
-    pageApplyUpload(b64, 'p.png', 2);
+    edgePageApplyUpload(b64, 'p.png', 2);
     expect(dropped).toBe('p.png');
   });
 
   test('3 fills the input and ends on blur, for a form that commits there', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     const input = slot();
     const events = seen();
-    expect(pageApplyUpload(b64, 'p.png', 3)).toMatchObject({ ok: true, mechanism: 3 });
+    expect(edgePageApplyUpload(b64, 'p.png', 3)).toMatchObject({ ok: true, mechanism: 3 });
     expect(input.files[0].name).toBe('p.png');
     expect(events).toEqual(['focus', 'input', 'change', 'blur']);
   });
 
   test('an unknown mechanism falls back to the picker rather than doing nothing', () => {
-    const { pageApplyUpload } = loadPageFns('');
+    const { edgePageApplyUpload } = loadPageFns('');
     const input = slot();
-    expect(pageApplyUpload(b64, 'p.png', 99)).toMatchObject({ ok: true });
+    expect(edgePageApplyUpload(b64, 'p.png', 99)).toMatchObject({ ok: true });
     expect(input.files[0].name).toBe('p.png');
   });
 });
@@ -775,7 +775,7 @@ describe('the three upload gestures', () => {
 // them with `languagesPresent: []`. Which language it hit changed between runs —
 // Spanish twice, then Arabic — which is the signature of a race rather than of a
 // missing row. Partner Center renders this table after the page reports complete,
-// and only pageListLanguages had been taught to wait for it.
+// and only edgePageListLanguages had been taught to wait for it.
 //
 // The wait is for OUR row, not for any row: the table can arrive in pieces, and a
 // first row is no evidence that the one being looked for has come.
@@ -784,53 +784,53 @@ describe('opening a language', () => {
     <td><button aria-label="Edit ${lang} language details page"></button></td></tr>`;
 
   test('finds a row that is already there', async () => {
-    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('Arabic')}</table>`);
-    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+    const { edgePageOpenLanguage } = loadPageFns(`<table>${ROW('Arabic')}</table>`);
+    expect(await edgePageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
   });
 
   test('waits for a row that arrives late', async () => {
     let ticks = 0;
-    const { pageOpenLanguage } = loadPageFns('<table></table>', () => {
+    const { edgePageOpenLanguage } = loadPageFns('<table></table>', () => {
       ticks += 1;
       if (ticks === 4) {
         document.body.innerHTML = `<table>${ROW('English')}${ROW('Arabic')}</table>`;
       }
     });
-    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+    expect(await edgePageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
   });
 
   // Rows arriving in pieces: the first one is not the one we want, and stopping
   // there is exactly the bug.
   test('and keeps waiting when the rows that arrived are other languages', async () => {
     let ticks = 0;
-    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`, () => {
+    const { edgePageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`, () => {
       ticks += 1;
       if (ticks === 5) {
         document.body.innerHTML = `<table>${ROW('English')}${ROW('Arabic')}</table>`;
       }
     });
-    expect(await pageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
+    expect(await edgePageOpenLanguage(['Arabic'])).toMatchObject({ ok: true, selected: 'Arabic' });
   });
 
   // The two failures read identically before, and they call for opposite
   // responses: add the language, or just run it again.
   test('says the page never rendered when there are no rows at all', async () => {
-    const { pageOpenLanguage } = loadPageFns('<div>loading</div>');
-    const out = await pageOpenLanguage(['Arabic']);
+    const { edgePageOpenLanguage } = loadPageFns('<div>loading</div>');
+    const out = await edgePageOpenLanguage(['Arabic']);
     expect(out).toMatchObject({ ok: false, step: 'language-not-added', languagesPresent: [] });
     expect(out.detail).toMatch(/did not render/);
   });
 
   test('and says the language is missing when other languages are listed', async () => {
-    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`);
-    const out = await pageOpenLanguage(['Arabic']);
+    const { edgePageOpenLanguage } = loadPageFns(`<table>${ROW('English')}</table>`);
+    const out = await edgePageOpenLanguage(['Arabic']);
     expect(out.languagesPresent).toEqual(['English']);
     expect(out.detail).toMatch(/Add a language/);
   });
 
   test('and matches an alias, since the console does not spell them our way', async () => {
-    const { pageOpenLanguage } = loadPageFns(`<table>${ROW('Norwegian (Bokmål)')}</table>`);
-    expect(await pageOpenLanguage(['Norwegian', 'Norwegian (Bokmål)']))
+    const { edgePageOpenLanguage } = loadPageFns(`<table>${ROW('Norwegian (Bokmål)')}</table>`);
+    expect(await edgePageOpenLanguage(['Norwegian', 'Norwegian (Bokmål)']))
       .toMatchObject({ ok: true, selected: 'Norwegian (Bokmål)' });
   });
 });
@@ -845,7 +845,7 @@ describe('reading the language table', () => {
   test('waits for the row count to stop changing', async () => {
     const langs = ['English', 'French', 'German', 'Spanish'];
     let ticks = 0;
-    const { pageListLanguages } = loadPageFns(`<table>${ROW('English')}</table>`
+    const { edgePageListLanguages } = loadPageFns(`<table>${ROW('English')}</table>`
       + '<button>Add a language</button>', () => {
       ticks += 1;
       if (ticks <= 4) {
@@ -853,7 +853,7 @@ describe('reading the language table', () => {
           + '<button>Add a language</button>';
       }
     });
-    const out = await pageListLanguages();
+    const out = await edgePageListLanguages();
     expect(out.languages.map((l) => l.language)).toEqual(langs);
   });
 });
@@ -875,28 +875,28 @@ describe('the description field', () => {
     `<textarea aria-label="${label}" maxlength="10000"></textarea>`;
 
   test('is found by its plain label', () => {
-    const { pageSetDescription } = loadPageFns(page('Description'));
-    expect(pageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
+    const { edgePageSetDescription } = loadPageFns(page('Description'));
+    expect(edgePageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
   });
 
   test('and still found once a warning is appended to it', () => {
-    const { pageSetDescription } = loadPageFns(page(
+    const { edgePageSetDescription } = loadPageFns(page(
       'Description  : Warning Avoid referencing other browsers in your extension '
       + 'description such as Firefox.'));
-    expect(pageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
+    expect(edgePageSetDescription('hello', true)).toMatchObject({ ok: true, length: 5 });
   });
 
   // Anchored at the start rather than searched for anywhere, because these are
   // different fields and a substring test would take either.
   test('but is not confused with a short description', () => {
-    const { pageSetDescription } = loadPageFns(page('Short description'));
-    expect(pageSetDescription('hello', true))
+    const { edgePageSetDescription } = loadPageFns(page('Short description'));
+    expect(edgePageSetDescription('hello', true))
       .toMatchObject({ ok: false, step: 'no-description-field' });
   });
 
   test('and a page with neither says what it did see', () => {
-    const { pageSetDescription } = loadPageFns(page('Extension name'));
-    expect(pageSetDescription('hello', true).textareasSeen).toEqual(['Extension name']);
+    const { edgePageSetDescription } = loadPageFns(page('Extension name'));
+    expect(edgePageSetDescription('hello', true).textareasSeen).toEqual(['Extension name']);
   });
 
   // The console reviews the text as it is typed, so its verdict on what we just
@@ -904,25 +904,25 @@ describe('the description field', () => {
   // page carries a warning is one that looks fine and then fails certification.
   test('reports a warning the console raises about what was written', () => {
     document.body.innerHTML = page('Description');
-    const { pageSetDescription } = loadPageFns('');
+    const { edgePageSetDescription } = loadPageFns('');
     document.body.innerHTML = page('Description');
     const ta = document.querySelector('textarea');
     ta.addEventListener('input', () => ta.setAttribute(
       'aria-label', 'Description  : Warning Avoid referencing other browsers.'));
 
-    const out = pageSetDescription('hello', true);
+    const out = edgePageSetDescription('hello', true);
     expect(out.ok).toBe(true);
     expect(out.warning).toBe('Avoid referencing other browsers.');
   });
 
   test('and reports none when the console is content', () => {
-    const { pageSetDescription } = loadPageFns(page('Description'));
-    expect(pageSetDescription('hello', true).warning).toBeNull();
+    const { edgePageSetDescription } = loadPageFns(page('Description'));
+    expect(edgePageSetDescription('hello', true).warning).toBeNull();
   });
 
   test('a dry run writes nothing and still names the field', () => {
-    const { pageSetDescription } = loadPageFns(page('Description'));
-    const out = pageSetDescription('hello', false);
+    const { edgePageSetDescription } = loadPageFns(page('Description'));
+    const out = edgePageSetDescription('hello', false);
     expect(out).toMatchObject({ ok: true, dryRun: true, wouldWrite: 5 });
     expect(document.querySelector('textarea').value).toBe('');
   });
