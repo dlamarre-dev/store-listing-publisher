@@ -59,7 +59,7 @@ function load({ honours = 1, delay = 0, count = 0, applyResult = null,
       },
       scripting: {
         executeScript: async ({ func, args }) => {
-          if (func.name === 'pageCountScreenshots') {
+          if (func.name === 'edgePageCountScreenshots') {
             state.polls += 1;
             if (state.pending !== null && state.polls > state.pending.at) {
               state.count += duplicate ? 2 : 1;
@@ -67,14 +67,14 @@ function load({ honours = 1, delay = 0, count = 0, applyResult = null,
             }
             return [{ result: { ok: true, count: state.count, scope: 'localized' } }];
           }
-          if (func.name === 'pageSlotState') {
+          if (func.name === 'edgePageSlotState') {
             state.slotChecks += 1;
             if (!slotState) return [{ result: null }];
             return [{ result: { ok: true, count: state.count,
                                 committed: state.count,
                                 ready: state.slotChecks > readyAfter } }];
           }
-          if (func.name === 'pageApplyUpload') {
+          if (func.name === 'edgePageApplyUpload') {
             const mechanism = args[2];
             state.applied.push(mechanism);
             if (applyResult) return [{ result: applyResult }];

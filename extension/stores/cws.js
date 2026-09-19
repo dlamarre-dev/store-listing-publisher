@@ -2,10 +2,19 @@
 //
 // Every DOM heuristic for the dev-console "Store listing" page lives in this
 // file — if Google redesigns the console, this is the only file to update.
-// The page functions (page*) are serialised by chrome.scripting.executeScript
+// The page functions (cwsPage*) are serialised by chrome.scripting.executeScript
 // into the MAIN world, so each one must be fully self-contained: no closures,
 // no references to anything outside its own body or its args. That is why the
 // small helpers (visible/txt/trail…) are duplicated in each function.
+//
+// They carry the store id in their names because the manifest loads every
+// stores/ file into ONE shared background scope, in its own order. Two stores
+// declaring pageSetDescription is not an error there — the file loaded last
+// simply wins, and the driver that lost keeps calling its own method and gets
+// the other store's DOM code injected into its page. That happened: a CWS run
+// selected Arabic correctly and then aborted with Partner Center's
+// "no-description-field" diagnostics, because stores/edge.js loads after this
+// file. The prefix is the fix; the test in tests/drivers.test.js is the guard.
 //
 // Page facts (probed June 2026):
 // - The language selector is a DIV[role=combobox] whose text concatenates the
@@ -23,8 +32,9 @@
 // - Each screenshots group has a "Drop image here" button next to its hidden
 //   file input; that button anchors the input lookup for uploads.
 //
-// Another store's driver goes in stores/<id>.js and must expose the same
-// surface as CwsDriver at the bottom of this file.
+// Another store's driver goes in stores/<id>.js, must expose the same surface
+// as CwsDriver at the bottom of this file, and must prefix its own page
+// functions with its store id for the reason above.
 
 const CWS = {
   BASE: 'https://chrome.google.com/webstore/devconsole',
@@ -36,7 +46,7 @@ const CWS = {
 // Diagnostic dump of everything the other page functions rely on.
 // Run this first when a step fails: its output tells you which heuristic in
 // this file needs adjusting.
-function pageProbe() {
+function cwsPageProbe() {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -90,7 +100,7 @@ function pageProbe() {
 // Options are matched primarily by their trailing CWS code ("French – fr",
 // "English – en (default)"), with display names as fallback.
 // Returns {ok, selected, confirmed, trigger} or {ok:false, step, …diagnostics}.
-async function pageSelectLanguage(wanted) {
+async function cwsPageSelectLanguage(wanted) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -160,7 +170,7 @@ async function pageSelectLanguage(wanted) {
 // Finds the detailed-description textarea and (if apply) replaces its content
 // using the native value setter + input/change events so the SPA registers it.
 // With apply=false it only reports what it would target (dry run).
-function pageSetDescription(text, apply) {
+function cwsPageSetDescription(text, apply) {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -210,7 +220,7 @@ function pageSetDescription(text, apply) {
 // Counts screenshots in the given scope ('localized' | 'global') by their
 // "Remove image Screenshot N" buttons — immune to the promo tiles that share
 // the Global assets card. ok:false only when the card heading is missing.
-function pageCountScreenshots(scope) {
+function cwsPageCountScreenshots(scope) {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -238,7 +248,7 @@ function pageCountScreenshots(scope) {
 // Deletes the first screenshot of the scope by clicking its "Remove image
 // Screenshot N" button (always visible), confirms a dialog if one appears,
 // then waits for the count to drop. Returns {ok, before, after}.
-async function pageDeleteOneScreenshot(scope) {
+async function cwsPageDeleteOneScreenshot(scope) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
     const s = getComputedStyle(el);
@@ -289,12 +299,12 @@ async function pageDeleteOneScreenshot(scope) {
 
 // Injects one PNG into the screenshots file input of the scope via
 // DataTransfer. The upload itself is asynchronous — the caller polls
-// pageCountScreenshots. The input is hidden, so it is located through the
+// cwsPageCountScreenshots. The input is hidden, so it is located through the
 // visible "Drop image here" button of the card's screenshots group (the
 // promo-tile inputs in Global assets have no drop button when filled), with
 // the card-scoped inputs in document order as fallback. The "Drop image here"
 // button itself is never clicked — that would open the OS file picker.
-function pageUploadScreenshot(b64, filename, scope) {
+function cwsPageUploadScreenshot(b64, filename, scope) {
   const visible = el => {
     const s = getComputedStyle(el);
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
@@ -370,13 +380,13 @@ const CwsDriver = {
   // match a page this driver has no business injecting into.
   ownsUrl: url => /^https?:\/\/chrome\.google\.com\/webstore\/devconsole\//.test(url),
 
-  probe: tabId => cwsExec(tabId, pageProbe),
+  probe: tabId => cwsExec(tabId, cwsPageProbe),
   selectLanguage: (tabId, locale) =>
-    cwsExec(tabId, pageSelectLanguage, [{ code: locale.cws, names: languageNames(locale) }]),
+    cwsExec(tabId, cwsPageSelectLanguage, [{ code: locale.cws, names: languageNames(locale) }]),
   setDescription: (tabId, text, apply) =>
-    cwsExec(tabId, pageSetDescription, [text, apply]),
-  countScreenshots: (tabId, scope) => cwsExec(tabId, pageCountScreenshots, [scope]),
-  deleteOneScreenshot: (tabId, scope) => cwsExec(tabId, pageDeleteOneScreenshot, [scope]),
+    cwsExec(tabId, cwsPageSetDescription, [text, apply]),
+  countScreenshots: (tabId, scope) => cwsExec(tabId, cwsPageCountScreenshots, [scope]),
+  deleteOneScreenshot: (tabId, scope) => cwsExec(tabId, cwsPageDeleteOneScreenshot, [scope]),
   uploadScreenshot: (tabId, b64, filename, scope) =>
-    cwsExec(tabId, pageUploadScreenshot, [b64, filename, scope]),
+    cwsExec(tabId, cwsPageUploadScreenshot, [b64, filename, scope]),
 };
