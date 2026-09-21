@@ -30,6 +30,11 @@ const MAX_DELETES     = 12;     // safety bound on the delete loop
 
 const DRIVERS = { cws: CwsDriver, edge: EdgeDriver };
 
+// Whether a store has the screenshot card an option is asking for. Partner Center
+// has no global one — each language owns every asset on its own details page —
+// and its driver says so rather than this file knowing which store is which.
+const hasScope = (driver, scope) => (driver.screenshotScopes || []).includes(scope);
+
 // ── native messaging ──────────────────────────────────────────────────────────
 
 const NATIVE_HOST = 'com.storelistingpublisher.filereader';
@@ -531,6 +536,18 @@ async function runPublish(rawConfig, opts, onProgress) {
       + 'driver has no path templates to work from.');
   }
 
+  // The popup greys this option out for a store without a global card, but the
+  // popup is a reflection and this is the decision. Refused rather than skipped:
+  // a run that quietly drops what it was asked to do reads as a run that did it,
+  // and on this store the alternative is worse than nothing — "global" has no
+  // card to land in, so it would replace whichever language's page is open with
+  // the global locale's screenshots.
+  if (opts.updateGlobalImages && !hasScope(driver, 'global')) {
+    throw new Error(`${driver.id} has no international screenshots: this store gives `
+      + 'each language its own page, and every screenshot on one belongs to that '
+      + 'language. Untick "Replace international screenshots".');
+  }
+
   // Nothing ticked would open a tab, walk every language and write nothing.
   if (!opts.probeOnly && !opts.updateTexts && !opts.updateImages && !opts.updateGlobalImages) {
     throw new Error('Nothing selected — tick at least one of the description / localized '
@@ -717,6 +734,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, config });
       })
       .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // What each store can be asked for. The popup offers the options and has to
+  // know which ones mean anything where, but which store has a global assets card
+  // is the driver's fact, not the popup's — so it is asked for rather than
+  // duplicated into another file that would go stale on its own.
+  if (msg.type === 'STORE_INFO') {
+    const stores = {};
+    for (const [id, driver] of Object.entries(DRIVERS)) {
+      stores[id] = { screenshotScopes: driver.screenshotScopes || [] };
+    }
+    sendResponse({ ok: true, stores });
     return true;
   }
 

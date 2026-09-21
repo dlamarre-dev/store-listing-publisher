@@ -3,6 +3,7 @@ const storeSel   = document.getElementById('store');
 const optTexts   = document.getElementById('optTexts');
 const optImages  = document.getElementById('optImages');
 const optGlobal  = document.getElementById('optGlobalImages');
+const globalRow  = document.getElementById('optGlobalImagesRow');
 const optDryRun  = document.getElementById('optDryRun');
 const filterIn   = document.getElementById('filter');
 const runBtn     = document.getElementById('run');
@@ -77,6 +78,35 @@ function resolveConfig(raw) {
 }
 
 let resolvedConfig = null;
+// What each store can be asked for, from the drivers themselves (STORE_INFO).
+let storeInfo = {};
+
+// Greys out the options the selected store has no card for.
+//
+// Partner Center has no global assets card — each language owns every screenshot
+// on its own details page — so "Replace international screenshots" means nothing
+// there, and what it would have done is worse than nothing: a "global" upload
+// lands on whichever language's page is open. Which store that is, is the
+// driver's fact; this only reflects it.
+//
+// Unticked as well as disabled, because a disabled checkbox still reports
+// `checked` and the run would be asked for it anyway.
+function applyStoreCapabilities() {
+  const scopes = storeInfo[storeSel.value]?.screenshotScopes;
+  // Unknown store, or an answer that has not arrived: offer everything rather
+  // than silently hide an option that does exist.
+  const hasGlobal = !scopes || scopes.includes('global');
+  optGlobal.disabled = !hasGlobal;
+  if (!hasGlobal) optGlobal.checked = false;
+  globalRow.classList.toggle('unavailable', !hasGlobal);
+  // The store's own label, not its id: this is a sentence the operator reads.
+  const label = storeSel.options[storeSel.selectedIndex]?.textContent || storeSel.value;
+  globalRow.title = hasGlobal ? ''
+    : `${label} gives each language its own page, so every screenshot on one `
+      + 'belongs to that language. There is no international set to replace.';
+}
+
+storeSel.addEventListener('change', applyStoreCapabilities);
 
 function showNote(text) {
   noteEl.textContent = text || '';
@@ -184,6 +214,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // Populate the item dropdown from config, restore the last-used options, and
 // restore any log from a previous (possibly still-running) run.
 applyState(null);
+// Asked once, before the config: the options it greys out are on screen from the
+// first paint, and it does not depend on a config that may fail to load.
+chrome.runtime.sendMessage({ type: 'STORE_INFO' }, res => {
+  if (chrome.runtime.lastError || !res?.ok) return;
+  storeInfo = res.stores;
+  applyStoreCapabilities();
+});
 loadBundledConfig()
   .then(resolveConfig)
   .then(config => {
@@ -211,6 +248,9 @@ loadBundledConfig()
         showNote(`Last run ${run_resume.reason === 'stopped' ? 'stopped' : 'aborted'} — `
           + `filter set to "${run_resume.filter}".`);
       }
+      // After the saved options: a run remembered from a store that has a global
+      // card must not leave the box ticked on one that has none.
+      applyStoreCapabilities();
       renderLog(run_log);
       askState();
     });

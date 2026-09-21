@@ -13,6 +13,8 @@
     .check { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; color: #333; }
     .check input { margin: 0; }
     .check small { color: #999; }
+    .check.unavailable { color: #aaa; }
+    .check.unavailable small { color: #bbb; }
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
     button {
       padding: 6px 14px; background: #1a73e8; color: #fff;
@@ -48,7 +50,7 @@
     <span>Update detailed descriptions <small>(every locale)</small></span></div>
   <div class="check"><input type="checkbox" id="optImages">
     <span>Replace the localized screenshots per locale</span></div>
-  <div class="check"><input type="checkbox" id="optGlobalImages">
+  <div class="check" id="optGlobalImagesRow"><input type="checkbox" id="optGlobalImages">
     <span>Replace international screenshots <small>(global card, once per deploy)</small></span></div>
   <div class="check"><input type="checkbox" id="optDryRun">
     <span>Dry run <small>(navigate + locate fields, write nothing)</small></span></div>

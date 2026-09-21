@@ -500,7 +500,10 @@ product shows one row even with 43 locales in its zip.
 
 That pass is gated on the **driver having `addLanguage`**, never on which store is
 selected, so a store without the concept skips it entirely and the orchestration
-stays store-agnostic. It is idempotent: it asks the page what is already there and
+stays store-agnostic. Every difference between the two stores is expressed that
+way — as a capability the driver declares (`addLanguage`, `saveDraft`,
+`screenshotScopes`) and the orchestration asks about, never as a store name it
+checks for. It is idempotent: it asks the page what is already there and
 adds only the rest, so re-running after an abort resumes instead of duplicating.
 That matters for something 42 steps long the first time and zero steps long every
 time after.

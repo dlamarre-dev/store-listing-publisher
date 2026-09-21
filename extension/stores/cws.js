@@ -361,14 +361,21 @@ async function cwsExec(tabId, func, args = []) {
 }
 
 // Interface every store driver must expose (see background.js):
-//   id, assetProfile, listingUrl, isLoginUrl, probe, selectLanguage,
-//   setDescription, countScreenshots, deleteOneScreenshot, uploadScreenshot
-//   — screenshot ops take scope 'localized' | 'global'.
+//   id, assetProfile, screenshotScopes, listingUrl, isLoginUrl, probe,
+//   selectLanguage, setDescription, countScreenshots, deleteOneScreenshot,
+//   uploadScreenshot — screenshot ops take one of the driver's own
+//   screenshotScopes, which are 'localized' and, where the store has such a card,
+//   'global'.
 const CwsDriver = {
   id: 'cws',
 
   // Which block of config.assets holds this store's path templates.
   assetProfile: 'chrome',
+
+  // Which screenshot cards this store actually has. Both, here: one listing page
+  // carries the per-language "Localized assets" and the language-independent
+  // "Global assets" side by side.
+  screenshotScopes: ['localized', 'global'],
 
   listingUrl: (config, item) =>
     `${CWS.BASE}/${config.publisher_id}/${item.id}/edit/listing?hl=en`,

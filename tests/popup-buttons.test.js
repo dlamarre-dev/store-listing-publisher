@@ -29,7 +29,12 @@ const CONFIG = {
 //
 // `runState` is what the background answers RUN_STATE with; `stored` is what
 // storage.local already holds. The two disagreeing is the whole point.
-async function openPopup({ runState = { running: false }, stored = {} } = {}) {
+const STORES = {
+  cws: { screenshotScopes: ['localized', 'global'] },
+  edge: { screenshotScopes: ['localized'] },
+};
+
+async function openPopup({ runState = { running: false }, stored = {}, stores = STORES } = {}) {
   document.documentElement.innerHTML = HTML.replace(/<script[\s\S]*?<\/script>/g, '');
 
   const store = { ...stored };
@@ -44,6 +49,7 @@ async function openPopup({ runState = { running: false }, stored = {} } = {}) {
         sent.push(msg);
         const reply = {
           RESOLVE_CONFIG: () => ({ ok: true, config: CONFIG }),
+          STORE_INFO: () => ({ ok: true, stores }),
           RUN_STATE: () => ({ ok: true, ...runState }),
           // The real handler flips the flag and keeps running, so every later
           // RUN_STATE says "stopping". A frozen fixture here would let the popup
@@ -97,6 +103,14 @@ async function openPopup({ runState = { running: false }, stored = {} } = {}) {
     stop: el('stop'),
     filter: el('filter'),
     note: el('note'),
+    store: el('store'),
+    global: el('optGlobalImages'),
+    globalRow: el('optGlobalImagesRow'),
+    selectStore: async (id) => {
+      el('store').value = id;
+      el('store').dispatchEvent(new window.Event('change'));
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    },
     setState: (state) => chrome.storage.local.set({ run_state: state }),
     setResume: (v) => chrome.storage.local.set({ run_resume: v }),
     settle: async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); },
@@ -187,4 +201,65 @@ test('Stop asks the background to stop, once', async () => {
   expect(ui.stop.disabled).toBe(true);
   expect(ui.stop.textContent).toBe('Stopping…');
   expect(ui.run.disabled).toBe(true);
+});
+
+// Partner Center gives each language its own details page and has no global
+// assets card, so "Replace international screenshots" means nothing there — and
+// what it would have done is worse than nothing: the upload lands on whichever
+// language's page is open. Which store that is comes from the drivers
+// (STORE_INFO), not from a second list in here.
+describe('an option the selected store has no card for', () => {
+  test('is offered on the Chrome Web Store', async () => {
+    const ui = await openPopup();
+    await ui.selectStore('cws');
+    expect(ui.global.disabled).toBe(false);
+    expect(ui.globalRow.classList.contains('unavailable')).toBe(false);
+  });
+
+  test('is greyed out on Partner Center', async () => {
+    const ui = await openPopup();
+    await ui.selectStore('edge');
+    expect(ui.global.disabled).toBe(true);
+    expect(ui.globalRow.classList.contains('unavailable')).toBe(true);
+    // Named by its label, not its id — the tooltip is a sentence.
+    expect(ui.globalRow.title).toMatch(/^Microsoft Edge \(Partner Center\) gives/);
+  });
+
+  // A disabled checkbox still reports `checked`, so greying it out is not enough:
+  // the run would be asked for it anyway and refused.
+  test('is unticked, not just disabled', async () => {
+    const ui = await openPopup();
+    await ui.selectStore('cws');
+    ui.global.checked = true;
+    await ui.selectStore('edge');
+    expect(ui.global.checked).toBe(false);
+  });
+
+  test('comes back when a store that has the card is selected again', async () => {
+    const ui = await openPopup();
+    await ui.selectStore('edge');
+    await ui.selectStore('cws');
+    expect(ui.global.disabled).toBe(false);
+    expect(ui.globalRow.classList.contains('unavailable')).toBe(false);
+  });
+
+  // The last run is restored from storage, and it may have been on another store.
+  test('is not restored from a remembered run on another store', async () => {
+    const ui = await openPopup({
+      stored: {
+        publisher_opts: { itemSlug: 'thing', store: 'edge', updateGlobalImages: true },
+      },
+    });
+    expect(ui.store.value).toBe('edge');
+    expect(ui.global.checked).toBe(false);
+    expect(ui.global.disabled).toBe(true);
+  });
+
+  // An answer that never arrives must not hide an option that does exist: the
+  // orchestration refuses what the store cannot do anyway.
+  test('stays offered when the background does not answer', async () => {
+    const ui = await openPopup({ stores: {} });
+    await ui.selectStore('edge');
+    expect(ui.global.disabled).toBe(false);
+  });
 });

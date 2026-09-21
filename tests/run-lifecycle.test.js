@@ -30,7 +30,12 @@ const CONFIG = {
   publisher_id: 'PUB',
   locales: LOCALES,
   items: [{ slug: 'thing', name: 'Thing', id: 'ITEMID' }],
-  assets: { root: '/assets', chrome: { description: '{slug}/{lang}.txt' } },
+  assets: {
+    root: '/assets',
+    chrome: { description: '{slug}/{lang}.txt', screenshot: '{slug}/{lang}-{n}.png' },
+    edge: { description: '{slug}/{lang}.txt', screenshot: '{slug}/{lang}-{n}.png' },
+  },
+  edge: { productIds: { thing: 'GUID' } },
 };
 
 const OPTS = {
@@ -390,5 +395,69 @@ describe('starting a run', () => {
     await clean.send({ type: 'START_PUBLISH', config: CONFIG, opts: OPTS });
     await clean.settled();
     expect(clean.store.run_resume).toBeNull();
+  });
+});
+
+// Partner Center has no global assets card: each language owns every screenshot
+// on its own details page. The popup greys the option out, but the popup is a
+// reflection and is destroyed whenever it loses focus — this is the decision.
+describe('an option the store has no card for', () => {
+  // Dry: whether the option is accepted is the question, and the upload itself has
+  // suites of its own.
+  const globalOnly = {
+    ...OPTS, updateTexts: false, updateGlobalImages: true, dryRun: true,
+  };
+
+  test('is refused, naming what the store does instead', async () => {
+    const bg = load();
+    await bg.send({
+      type: 'START_PUBLISH', config: CONFIG, opts: { ...globalOnly, store: 'edge' },
+    });
+    expect(await bg.settled()).toBe('error');
+    expect(bg.log().join(' ')).toMatch(/no international screenshots/i);
+  });
+
+  // Refused, not quietly dropped: a run that skips what it was asked for reads
+  // like a run that did it.
+  test('never opens a tab', async () => {
+    const bg = load();
+    await bg.send({
+      type: 'START_PUBLISH', config: CONFIG, opts: { ...globalOnly, store: 'edge' },
+    });
+    await bg.settled();
+    expect(bg.injected).toEqual([]);
+  });
+
+  test('is fine on a store that does have the card', async () => {
+    const bg = load();
+    await bg.send({ type: 'START_PUBLISH', config: CONFIG, opts: globalOnly });
+    expect(await bg.settled()).toBe('done');
+  });
+
+  test('leaves the page willing to start another', async () => {
+    const bg = load();
+    await bg.send({
+      type: 'START_PUBLISH', config: CONFIG, opts: { ...globalOnly, store: 'edge' },
+    });
+    await bg.settled();
+    expect(await bg.send({ type: 'RUN_STATE' })).toMatchObject({ running: false });
+  });
+});
+
+// The popup has to know which options mean anything where, and that is the
+// driver's fact rather than a second list in another file.
+describe('STORE_INFO', () => {
+  test('reports the screenshot scopes of each store', async () => {
+    const bg = load();
+    const res = await bg.send({ type: 'STORE_INFO' });
+    expect(res.stores.cws.screenshotScopes).toContain('global');
+    expect(res.stores.edge.screenshotScopes).not.toContain('global');
+    expect(res.stores.edge.screenshotScopes).toContain('localized');
+  });
+
+  test('covers every registered store', async () => {
+    const bg = load();
+    const res = await bg.send({ type: 'STORE_INFO' });
+    expect(Object.keys(res.stores).sort()).toEqual(['cws', 'edge']);
   });
 });
