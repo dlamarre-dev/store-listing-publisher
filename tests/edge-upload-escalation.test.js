@@ -290,9 +290,16 @@ describe('the wait before adding to a slot', () => {
     expect(res.settleMs).toBeLessThan(1000);
   });
 
+  // The bound is loose on the low side, and has to be: what the driver owes is
+  // GAP_MS minus the real time that has passed since it stamped the clock, so
+  // `>= GAP_MS` is an assertion that the two uploads happened inside the same
+  // millisecond. It held on a fast machine and failed on CI at 14999. A second
+  // either way still tells a gap that was waited from one that was skipped — the
+  // question this test is actually asking — and the upper bound is what keeps it
+  // from passing on a wait of two gaps.
   test('but is owed after an upload of our own', async () => {
     const { res } = await second({});
-    expect(res.settleMs).toBeGreaterThanOrEqual(GAP_MS);
+    expect(res.settleMs).toBeGreaterThan(GAP_MS - 1000);
     expect(res.settleMs).toBeLessThan(GAP_MS + 2000);
   });
 
@@ -301,7 +308,7 @@ describe('the wait before adding to a slot', () => {
   test('a slot that cannot be read still waits out the gap', async () => {
     const { res, state } = await second({ slotState: false });
     expect(state.slotChecks).toBe(1);
-    expect(res.settleMs).toBeGreaterThanOrEqual(GAP_MS);
+    expect(res.settleMs).toBeGreaterThan(GAP_MS - 1000);
   });
 
   test('the gap is reported, so it can be lowered against evidence', async () => {

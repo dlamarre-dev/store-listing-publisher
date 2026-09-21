@@ -1619,6 +1619,15 @@ const EdgeDriver = {
   // Which block of config.assets holds this store's path templates.
   assetProfile: 'edge',
 
+  // No global card exists here, so there is no such thing as an international
+  // screenshot: Partner Center gives each language its own details page and every
+  // asset on one belongs to that language. Saying so is what greys the option out
+  // in the popup and refuses it in the orchestration — a "global" upload would
+  // otherwise land in whichever language's page happened to be open, replacing its
+  // screenshots with the global locale's set. duplicateScreenshots is this store's
+  // own answer to the question, and it is deliberately not wired up (see below).
+  screenshotScopes: ['localized'],
+
   // The Store listings page. `edgeListingPath` in the config overrides the tail,
   // because the exact route is not documented and the probe is how we learn it —
   // an override means finding out does not need a code change.

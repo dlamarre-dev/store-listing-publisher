@@ -13,12 +13,15 @@
     .check { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; color: #333; }
     .check input { margin: 0; }
     .check small { color: #999; }
+    .check.unavailable { color: #aaa; }
+    .check.unavailable small { color: #bbb; }
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
     button {
       padding: 6px 14px; background: #1a73e8; color: #fff;
       border: none; border-radius: 3px; cursor: pointer; font: inherit;
     }
     button.secondary { background: #5f6368; }
+    button.danger { background: #b00020; }
     button:disabled { background: #aaa; cursor: default; }
     #log {
       margin-top: 10px; font-size: 11px; font-family: monospace;
@@ -28,6 +31,7 @@
     }
     .ok  { color: #1e7b34; }
     .err { color: #b00020; }
+    #note { margin-top: 10px; font-size: 11px; color: #8a6d00; display: none; }
   </style>
 </head>
 <body>
@@ -46,7 +50,7 @@
     <span>Update detailed descriptions <small>(every locale)</small></span></div>
   <div class="check"><input type="checkbox" id="optImages">
     <span>Replace the localized screenshots per locale</span></div>
-  <div class="check"><input type="checkbox" id="optGlobalImages">
+  <div class="check" id="optGlobalImagesRow"><input type="checkbox" id="optGlobalImages">
     <span>Replace international screenshots <small>(global card, once per deploy)</small></span></div>
   <div class="check"><input type="checkbox" id="optDryRun">
     <span>Dry run <small>(navigate + locate fields, write nothing)</small></span></div>
@@ -57,8 +61,10 @@
   <div class="actions">
     <button id="run">Run</button>
     <button id="probe" class="secondary" title="Open the listing page and dump its structure to the log">Probe page</button>
+    <button id="stop" class="danger" title="Finish the locale being written, save it, then stop">Stop</button>
   </div>
 
+  <div id="note"></div>
   <div id="log"></div>
 
   <script src="popup.js"></script>

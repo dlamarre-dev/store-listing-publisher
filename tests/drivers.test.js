@@ -46,8 +46,9 @@ function loadDrivers() {
 
 // The interface documented at the bottom of stores/cws.js.
 const SURFACE = [
-  'id', 'assetProfile', 'listingUrl', 'isLoginUrl', 'probe', 'selectLanguage',
-  'setDescription', 'countScreenshots', 'deleteOneScreenshot', 'uploadScreenshot',
+  'id', 'assetProfile', 'screenshotScopes', 'listingUrl', 'isLoginUrl', 'probe',
+  'selectLanguage', 'setDescription', 'countScreenshots', 'deleteOneScreenshot',
+  'uploadScreenshot',
 ];
 const STEPS = ['selectLanguage', 'setDescription', 'countScreenshots',
                'deleteOneScreenshot', 'uploadScreenshot'];
@@ -94,10 +95,38 @@ describe.each(Object.entries(drivers))('%s driver', (name, driver) => {
     }
   });
 
+  // Which screenshot cards the store has. The orchestration refuses an option the
+  // driver has no scope for, and the popup greys it out, so a driver that does not
+  // declare this would be offered a card it cannot find — and on a store with one
+  // page per language, a "global" upload lands on whichever language is open.
+  test('declares which screenshot scopes it has', () => {
+    expect(Array.isArray(driver.screenshotScopes)).toBe(true);
+    expect(driver.screenshotScopes.length).toBeGreaterThan(0);
+    // Every store has per-language screenshots; that is the point of the tool.
+    expect(driver.screenshotScopes).toContain('localized');
+    const unknown = driver.screenshotScopes.filter(
+      (s) => !['localized', 'global'].includes(s));
+    expect(unknown).toEqual([]);
+  });
+
   test('every step is callable', () => {
     for (const step of STEPS) {
       expect(typeof driver[step]).toBe('function');
     }
+  });
+});
+
+// Pinned, because it is the fact the popup greys an option out on and the
+// orchestration refuses a run over. The Chrome Web Store keeps a
+// language-independent "Global assets" card on the same page as the localized
+// one; Partner Center gives each language its own page and has no such card.
+describe('international screenshots exist only where there is a card for them', () => {
+  test('the Chrome Web Store has one', () => {
+    expect(drivers.cws.screenshotScopes).toContain('global');
+  });
+
+  test('Partner Center does not', () => {
+    expect(drivers.edge.screenshotScopes).not.toContain('global');
   });
 });
 
