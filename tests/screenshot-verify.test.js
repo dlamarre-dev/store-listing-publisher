@@ -78,7 +78,12 @@ function load() {
     clearTimeout: () => {},
     chrome: {
       runtime: { onMessage: { addListener: () => {} }, lastError: null },
-      storage: { local: { set: () => {}, get: async () => ({}) } },
+      // get serves both callers: background.js reconciles run_state with a
+      // callback, and the Edge driver awaits its learned latency.
+      storage: { local: {
+        set: () => {},
+        get: (_keys, cb) => { if (cb) { cb({}); return undefined; } return Promise.resolve({}); },
+      } },
       tabs: { onUpdated: { addListener: () => {}, removeListener: () => {} },
               get: (id, cb) => cb({ id, status: 'complete', url: 'https://x/' }),
               update: async () => {}, create: async () => ({ id: 1 }), query: async () => [] },

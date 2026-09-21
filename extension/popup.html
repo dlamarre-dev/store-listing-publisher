@@ -19,6 +19,7 @@
       border: none; border-radius: 3px; cursor: pointer; font: inherit;
     }
     button.secondary { background: #5f6368; }
+    button.danger { background: #b00020; }
     button:disabled { background: #aaa; cursor: default; }
     #log {
       margin-top: 10px; font-size: 11px; font-family: monospace;
@@ -28,6 +29,7 @@
     }
     .ok  { color: #1e7b34; }
     .err { color: #b00020; }
+    #note { margin-top: 10px; font-size: 11px; color: #8a6d00; display: none; }
   </style>
 </head>
 <body>
@@ -57,8 +59,10 @@
   <div class="actions">
     <button id="run">Run</button>
     <button id="probe" class="secondary" title="Open the listing page and dump its structure to the log">Probe page</button>
+    <button id="stop" class="danger" title="Finish the locale being written, save it, then stop">Stop</button>
   </div>
 
+  <div id="note"></div>
   <div id="log"></div>
 
   <script src="popup.js"></script>

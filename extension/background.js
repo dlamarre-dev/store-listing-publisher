@@ -167,6 +167,44 @@ function fmtDetail(detail) {
   catch { return String(detail); }
 }
 
+// ── run lifecycle ─────────────────────────────────────────────────────────────
+//
+// A run lives in this page's memory and nowhere else, so `currentRun` is the only
+// honest answer to "is something running?". If this page went away — add-on
+// reloaded, event page unloaded — the run went with it, and a `run_state` of
+// "running" left in storage is a leftover rather than a run.
+//
+// That leftover is what used to grey the popup's buttons out with nothing left to
+// press: the popup trusted storage, storage said running, and no run was ever
+// going to finish and say otherwise. Reloading the add-on did not help either,
+// because storage.local survives it. Answering RUN_STATE from memory, and
+// reconciling the leftover at load, is what makes "run again" possible without
+// reloading anything.
+let currentRun = null;
+
+// Not an error, an outcome. It travels the same way an abort does — thrown from a
+// checkpoint, unwinding whatever is between there and the top — but it is reported
+// as "stopped", because a run that did what it was told is not a run that failed.
+class RunStopped extends Error {
+  constructor(resumeLocale) {
+    super('Stopped');
+    this.resumeLocale = resumeLocale || null;
+  }
+}
+
+const stopRequested = () => currentRun?.stopping === true;
+
+// Where a Run would have to pick up to carry on from here.
+//
+// An abort names the locale it died on, because that one was not written. A stop
+// names the NEXT one, because the stop is taken between locales and the one before
+// it is finished and saved — resuming on it would delete and re-upload screenshots
+// that are already right, which on Partner Center is two minutes a locale.
+function rememberResume(locale, reason) {
+  const value = locale ? { filter: `from:${locale}`, locale, reason } : null;
+  chrome.storage.local.set({ run_resume: value });
+}
+
 // ── screenshot replacement (delete all, upload 1..N) ──────────────────────────
 
 async function waitForShotCount(driver, tabId, scope, expected, timeoutMs) {
@@ -525,6 +563,9 @@ async function runPublish(rawConfig, opts, onProgress) {
   if (opts.updateTexts && !opts.probeOnly) {
     onProgress(`Pre-flight: reading ${locales.length} descriptions…`);
     for (const locale of locales) {
+      // 43 native round trips before the browser is touched. A stop taken here
+      // costs nothing and needs no resume point: not a word has been written.
+      if (stopRequested()) throw new RunStopped(null);
       texts[locale.internal] = await readFileNative(
         descriptionPath(ctx.assetsRoot, profile, item, locale));
     }
@@ -589,12 +630,20 @@ async function runPublish(rawConfig, opts, onProgress) {
       onProgress(`Walking ${walkable.length} of ${locales.length} locale(s).`);
     }
 
+    // A stop is taken between locales and nowhere else. One locale is one unit of
+    // work — pick the language, write the description, replace the screenshots,
+    // save — and cutting it in half is how you get a page whose old screenshots are
+    // deleted and whose new ones never went up. So the current locale is finished,
+    // and the locale AFTER it is the one to resume on.
     for (const locale of walkable) {
+      if (stopRequested()) throw new RunStopped(locale.internal);
       try {
         await publishLocale(driver, tab.id, locale, texts[locale.internal], opts, ctx, onProgress);
       } catch (e) {
         if (e.detail) onProgress('Diagnostics: ' + fmtDetail(e.detail));
         onProgress(`Aborted at locale "${locale.internal}". Fix the issue (see stores/${driver.id}.js), then resume with filter "from:${locale.internal}".`);
+        // This one was not written, so resuming means redoing it — unlike a stop.
+        rememberResume(locale.internal, 'error');
         throw e;
       }
     }
@@ -604,6 +653,11 @@ async function runPublish(rawConfig, opts, onProgress) {
 
   // International / global screenshots: the "Global assets" card on the same
   // page, independent of the selected language. Replaced once per deployment.
+  // The walk is done by here, so there is no locale left to resume from — what a
+  // stop skips is the one-per-deploy global card, which a Run with the
+  // per-language boxes unticked redoes on its own.
+  if (stopRequested()) throw new RunStopped(null);
+
   if (opts.updateGlobalImages) {
     onProgress(`International screenshots (Global assets) → ${globalLocale.internal} set…`);
     if (opts.dryRun) {
@@ -645,7 +699,9 @@ function pushLog(text, cls, state) {
 
 function resetLog() {
   runLog = [];
-  chrome.storage.local.set({ run_log: runLog, run_state: 'running' });
+  // run_resume goes with it: a suggestion left over from the run before this one
+  // would pre-fill the popup's filter behind the operator's back.
+  chrome.storage.local.set({ run_log: runLog, run_state: 'running', run_resume: null });
 }
 
 // ── message handler ───────────────────────────────────────────────────────────
@@ -664,8 +720,41 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // Asked by the popup every time it opens, because storage cannot answer it: a
+  // run only exists while this page does, and `run_state` outlives both.
+  if (msg.type === 'RUN_STATE') {
+    sendResponse({ ok: true, running: !!currentRun, stopping: stopRequested() });
+    return true;
+  }
+
+  // Stop is a request, not a kill. The run takes it at its next checkpoint —
+  // between locales — so the locale being written is finished and saved first.
+  // Saying so out loud matters: on Partner Center that wait is minutes, and a
+  // button that looks ignored gets pressed again, or worse, gets the add-on
+  // reloaded mid-write.
+  if (msg.type === 'STOP_RUN') {
+    if (!currentRun) { sendResponse({ ok: false, error: 'Nothing is running.' }); return true; }
+    if (!currentRun.stopping) {
+      currentRun.stopping = true;
+      pushLog('Stop requested — finishing the locale in progress, then stopping…',
+              null, 'stopping');
+    }
+    sendResponse({ ok: true, stopping: true });
+    return true;
+  }
+
   if (msg.type !== 'START_PUBLISH') return;
   const { config, opts } = msg;
+
+  // Two runs would share one tab and fight over it. The popup disables Run while
+  // one is in flight, but the popup is destroyed whenever it loses focus and its
+  // buttons are only a reflection — this is where the answer actually lives.
+  if (currentRun) {
+    sendResponse({ ok: false, error: 'A run is already in progress — press Stop first.' });
+    return true;
+  }
+
+  currentRun = { stopping: false };
   (async () => {
     resetLog();
     pushLog(opts.probeOnly ? 'Probing…' : 'Starting…');
@@ -674,9 +763,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       pushLog('Done.', 'ok', 'done');
       sendResponse({ ok: true });
     } catch (e) {
-      pushLog('Error: ' + e.message, 'err', 'error');
-      sendResponse({ ok: false, error: e.message });
+      if (e instanceof RunStopped) {
+        rememberResume(e.resumeLocale, 'stopped');
+        pushLog(e.resumeLocale
+          ? `Stopped. Nothing is half-written — resume with filter "from:${e.resumeLocale}".`
+          : 'Stopped. Nothing is half-written.', 'ok', 'stopped');
+        sendResponse({ ok: true, stopped: true });
+      } else {
+        pushLog('Error: ' + e.message, 'err', 'error');
+        sendResponse({ ok: false, error: e.message });
+      }
+    } finally {
+      // Whatever happened above — finished, aborted, stopped — the next Run has to
+      // find this page willing to start one. That is the whole fix.
+      currentRun = null;
     }
   })();
   return true;
+});
+
+// A "running" in storage with no run behind it is the state this page is reborn
+// into after it was torn down mid-run. Nobody else will ever correct it — the run
+// that would have is gone — and until someone does, the popup greys its buttons
+// out over a run that ended when the page did.
+//
+// Guarded on currentRun because this callback is asynchronous and the message
+// that woke the page may be the START_PUBLISH of a perfectly real new run.
+chrome.storage.local.get(['run_state'], ({ run_state }) => {
+  if (currentRun) return;
+  if (run_state === 'running' || run_state === 'stopping') {
+    chrome.storage.local.set({ run_state: 'interrupted' });
+  }
 });

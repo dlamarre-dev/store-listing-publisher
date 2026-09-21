@@ -337,7 +337,15 @@ page.
 - **Dry run** — navigates and locates every field, writes nothing.
 - **Locale filter** — empty = all; `fr,de` = just those; `from:pl` = resume an
   aborted run at `pl`. Ignored, with a log line, when no per-language step is
-  ticked.
+  ticked. After a run aborts or is stopped, the add-on fills this in for you —
+  see below.
+- **Stop** — asks the run to stop. It is a request, not a kill: the locale being
+  written is **finished and saved first**, and only then does the run end. One
+  locale is one unit of work — pick the language, write the description, replace
+  the screenshots, save — and stopping inside one is how a listing ends up with
+  its old screenshots deleted and its new ones never uploaded. On Partner Center
+  that wait is a couple of minutes, so the log says the stop was heard the moment
+  you press it.
 - **Probe page** — dumps the page's structure (dropdowns, textareas, file
   inputs, headings, buttons, and what it walked to find them) to the log. This is
   the debugging entry point when a console changes.
@@ -365,7 +373,18 @@ page.
   output on the words that had just failed to match.
 
 A run aborts at the first failed step, with diagnostics, rather than risk
-writing into the wrong locale. Fix, then resume with `from:<locale>`.
+writing into the wrong locale.
+
+**Either way you can start again without reloading the add-on**, and the locale
+filter is already set to where the next run should pick up: the locale that
+aborted (it was not written, so it is retried), or the one after the last locale
+a stop finished (resuming on that one would delete and re-upload screenshots
+that are already right). Read it, change it if you disagree, press Run.
+
+If the add-on is reloaded or Firefox unloads its background page mid-run, the run
+dies with it — nothing keeps writing behind your back. The popup says the last
+run was interrupted and lets you start another; the log of the dead run is still
+there to show how far it got.
 
 The add-on fills the draft; it does not upload packages and does not publish.
 Those are `cws/cws_publish.py`'s job, and `--status` there is the way to see
@@ -382,12 +401,17 @@ it and reopen — the output is still there, still updating.
 Every DOM heuristic lives in `extension/stores/cws.js` and
 `extension/stores/edge.js`, and selectors are deliberately text- and role-based
 rather than class-based, so cosmetic redesigns pass through. When a step fails:
-click **Probe page**, read the dump, adjust the matching `page*` function, reload
-the temporary add-on, resume with `from:<locale>`.
+click **Probe page**, read the dump, adjust the matching `<store>Page*` function,
+reload the temporary add-on, resume with `from:<locale>`.
 
 Four things to know before editing either file:
 
-- The `page*` functions are **serialised** into the page by
+- Every function in a store file is **prefixed with that store's id**
+  (`cwsPageSetDescription`, `edgePageSetDescription`). The manifest loads every
+  `stores/` file into one shared scope, where a top-level `function` declared
+  twice is not an error — the file loaded last simply wins, and the other driver
+  silently injects its rival's DOM code into its own store's page.
+- The `<store>Page*` functions are **serialised** into the page by
   `chrome.scripting.executeScript({ world: 'MAIN' })`, so each one must be
   entirely self-contained. That is why the small helpers (`visible`, `txt`,
   `trail`) are repeated in every one of them. There is no bundler; factoring
@@ -538,10 +562,10 @@ loader learning a rule the other did not.
 **The DOM heuristics are tested too**, against a real DOM through
 `jest-environment-jsdom` — `tests/edge-page-functions.test.js` builds the shapes
 Partner Center actually serves (a command bar of web components, a slot with an
-error tile in it, a language table that renders late) and runs the real `page*`
-functions over them. A stub would not have caught any of the bugs that made this
-necessary, because each one was a wrong belief about DOM semantics and a
-hand-written stub inherits the same belief.
+error tile in it, a language table that renders late) and runs the real
+`edgePage*` functions over them. A stub would not have caught any of the bugs
+that made this necessary, because each one was a wrong belief about DOM
+semantics and a hand-written stub inherits the same belief.
 
 Two more suites cover the parts a page cannot show:
 `tests/edge-upload-escalation.test.js` fakes the page at the `executeScript`
@@ -549,6 +573,13 @@ boundary and drives the real upload loop — including a page that answers *slow
 which is the case the verify-before-escalate rule exists for — and
 `tests/screenshot-verify.test.js` does the same for the repair pass, checking that
 an error tile is removed **by name** rather than by position.
+
+`tests/run-lifecycle.test.js` covers the part that is neither a page nor a
+request: starting, stopping and starting again. It drives the real message
+handler against a real run, and asserts what the operator actually needs — a stop
+finishes the locale in progress, an aborted or stopped run always leaves the
+add-on willing to start another, and a `run_state` left behind by a background
+page that died mid-run is reconciled instead of believed.
 
 What is still not testable is whether any of it matches the console today. That is
 what **Dry run** and **Probe page** are for.
