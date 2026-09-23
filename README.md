@@ -1,37 +1,30 @@
 # Store Listing Publisher
 
-Operator tooling that publishes a browser extension: the package, the release
-lifecycle, and the localized listing — descriptions and screenshots — from
+Operator tooling to publish a browser extension: the package, the release
+lifecycle, and the localized listing (descriptions and screenshots), built from
 marketing assets on your own disk.
-
-It is split by **what each mechanism can actually do**, not by store:
 
 | | Package + release lifecycle | Listing metadata |
 |---|---|---|
-| **Chrome Web Store** | `cws/cws_publish.py` — API v2 | **`extension/`**, a Firefox add-on driving the dev console — [no API exists](#why-the-add-on-exists) |
-| **Microsoft Edge Add-ons** | `edge/edge_publish.py` — API v1.1 | **`extension/`** driving Partner Center — [no API exists](#why-the-add-on-exists) |
-| **addons.mozilla.org** | `amo/amo_publish.py` — API v5 | `amo/amo_publish.py` — API v5 |
+| **Chrome Web Store** | `cws/cws_publish.py` (API v2) | `extension/`, a Firefox add-on driving the dev console ([no API exists](#why-the-add-on-exists)) |
+| **Microsoft Edge Add-ons** | `edge/edge_publish.py` (API v1.1) | `extension/`, driving Partner Center ([no API exists](#why-the-add-on-exists)) |
+| **addons.mozilla.org** | `amo/amo_publish.py` (API v5) | `amo/amo_publish.py` (API v5) |
 
-Four of those six boxes are real APIs. Of the two that are not, both are store
-listings, and only one store of the three publishes an API for its own listing.
-The add-on is not a fallback or a legacy path — where it appears, it is the only
-way there is.
+The split follows what each store allows, not the store itself. Where the add-on
+appears, it is not a fallback: it is the only way there is.
 
-Nothing here invents content. You point it at a directory of assets and it puts
-them in the right fields, in the right language, in the right order, which is the
-part that is unbearable to do 43 times by hand.
+Three principles:
 
-**Nothing publishes by surprise.** Every write is dry-run by default and needs
-`--apply`, and nothing here ever submits a listing for review — that stays a
-human decision in the console.
-
-Saving differs by store, because the stores differ. The Chrome Web Store keeps
-all 43 languages behind one dropdown on a single page, so a run leaves the tab
-open with the draft filled in and clicking **Save draft** stays yours. Partner
-Center gives each language its own page and **discards what was typed into one
-when you leave it**, so an Edge run has to save each page as it writes it — a run
-that did not would fill 43 pages and keep none. The closing line of the log says
-which of the two happened.
+- **It invents nothing.** You point it at a directory of assets and it puts them
+  in the right fields, in the right language, in the right order.
+- **Nothing publishes by surprise.** Every write is a dry run unless you pass
+  `--apply`, and nothing ever submits a listing for review. That stays a human
+  decision in the console.
+- **Saving follows the store.** The Chrome Web Store keeps every language on one
+  page, so a run leaves the draft filled in and you click **Save draft**. Partner
+  Center gives each language its own page and discards unsaved edits when you
+  leave it, so an Edge run saves each page as it goes. The last log line says
+  which one happened.
 
 ---
 
@@ -40,16 +33,18 @@ which of the two happened.
 ```bash
 git clone https://github.com/dlamarre-dev/store-listing-publisher
 cd store-listing-publisher
-npm install                     # jest and a jsdom environment, for the tests
+npm install                     # jest and jsdom, for the tests
 cp extension/config.example.json extension/config.json
 ```
 
-Then, in order:
+Then:
 
-1. **Describe your assets** — see [Configuration](#configuration). Start from
-   `examples/per-language-dirs.config.json` (one directory per language) or
-   `examples/flat-layout.config.json` (language in the filename).
-2. **Install the native messaging host**, naming every directory it may read:
+1. **Describe your assets** in the config (see [Configuration](#configuration)).
+   Start from `examples/per-language-dirs.config.json` (one directory per
+   language) or `examples/flat-layout.config.json` (language in the filename).
+2. **Install the native messaging host**, naming every directory it may read.
+   The add-on has no filesystem access of its own; this host reads your PNGs and
+   text files, and refuses any path outside the roots you list.
    ```powershell
    .\native\install-native-host.ps1 -Root E:\my-project
    .\native\install-native-host.ps1 -Root E:\my-project,D:\other-assets   # several
@@ -58,53 +53,51 @@ Then, in order:
    ./native/install-native-host.sh /srv/marketing
    ./native/install-native-host.sh /srv/marketing /home/me/my-project     # several
    ```
-   The add-on has no filesystem of its own; this host is how it reads your PNGs
-   and text files. It refuses any path outside the roots you list.
-3. **Load the add-on**: Firefox → `about:debugging` → This Firefox → Load
-   Temporary Add-on → pick `extension/manifest.json`. Reload it after each
-   Firefox restart. Be signed into the Google account with publisher access in
-   this profile — there is no credential handling, the session is the auth.
+3. **Load the add-on**: Firefox, `about:debugging`, This Firefox, Load Temporary
+   Add-on, then pick `extension/manifest.json`. Reload it after each Firefox
+   restart. Sign in to the account with publisher access in that profile: the
+   browser session is the only authentication.
 4. **Click Dry run first.** It walks every language and locates every field
-   without writing anything. Do this before trusting a run on a console layout
-   you have not seen the tool work on.
+   without writing anything. Always do this on a console layout you have not
+   seen the tool work on.
 
 ### Releasing
 
 ```bash
-# Chrome Web Store — package and lifecycle
+# Chrome Web Store: package and lifecycle
 python cws/cws_publish.py --item my-extension --status                    # read-only
 python cws/cws_publish.py --item my-extension --upload --apply            # new draft
-#   ... then the add-on fills the localized listing draft, and you Save draft ...
+#   ... the add-on fills the localized listing, you click Save draft ...
 python cws/cws_publish.py --item my-extension --publish --staged --apply
 python cws/cws_publish.py --item my-extension --rollout 50 --apply
 
-# Microsoft Edge — package and lifecycle
+# Microsoft Edge: package and lifecycle
 python edge/edge_publish.py --item my-extension --upload --apply
 python edge/edge_publish.py --item my-extension --publish --apply
 python edge/edge_publish.py --item my-extension --status
 
-# addons.mozilla.org — package and listing, both by API
-python amo/amo_publish.py --item my-extension --upload-version           # dry-run
-python amo/amo_publish.py --item my-extension --texts --images --apply   # writes, live
+# addons.mozilla.org: package and listing, both by API
+python amo/amo_publish.py --item my-extension --upload-version           # dry run
+python amo/amo_publish.py --item my-extension --texts --images --apply   # live
 ```
 
-A dry-run of a write makes no API call and needs **no credentials at all**, so
-you can check the resolved package path and the exact body that would be sent
-before doing any OAuth setup.
+A dry run makes no API call and needs **no credentials**, so you can check the
+resolved package path and the exact request body before setting up any auth.
 
-Stdlib only, with one exception: service-account auth signs its JWT with RS256,
-which the standard library cannot do. See [Authentication](#authentication).
+The scripts use the standard library only, except service-account auth for the
+Chrome Web Store (see [Authentication](#authentication)).
 
 ---
 
 ## Configuration
 
-Two layers, and the split is the point.
+The config has two layers:
 
-The **project** whose assets are being published owns the interesting half —
-items, path templates, the locale table — in a file it commits to its own repo,
-where its own tests can check it. This tool's `config.json` then holds only what
-must never be committed, and points at the other with `extends`:
+- **The project file**, committed in the repo of the project being published. It
+  holds items, path templates and the locale table, where that project's own
+  tests can check them.
+- **`extension/config.json`**, in this tool, gitignored. It holds only secrets
+  and machine-specific paths, and points at the project file with `extends`:
 
 ```json
 {
@@ -116,37 +109,34 @@ must never be committed, and points at the other with `extends`:
 }
 ```
 
-Anything declared locally wins. Objects merge a key at a time, so a local
-`amo: { jwt_secret }` does not erase the project's `amo: { previewSet }`; arrays
-replace wholesale, a half-overridden locale table being worse than either
-version. You can also skip `extends` and put everything in one file.
+Merge rules: local values win; objects merge key by key (a local
+`amo: { jwt_secret }` keeps the project's `amo: { previewSet }`); arrays are
+replaced whole. You can also skip `extends` and keep everything in one file.
 
-**`config.json` goes in `extension/`, beside `manifest.json`** — that is the only
-directory the add-on can read with `chrome.runtime.getURL`, and both Python
-scripts default to the same file so every half stays in step. Put it anywhere else and
-Firefox fails the fetch with a bare *"The operation was aborted."*, which tells
-you nothing. Pass `--config` to point the Python half elsewhere.
+Two constraints:
 
-`extends` must be **absolute** when the add-on reads it: an extension knows its
-`moz-extension://` origin and never its own location on disk, so there is
-nothing for a relative path to resolve against. `amo_publish.py`, which does
-know where it is, accepts either.
+- **`config.json` must sit in `extension/`, beside `manifest.json`.** It is the
+  only place the add-on can read, and the Python scripts look there too. Anywhere
+  else, Firefox fails with a bare *"The operation was aborted."* Use `--config`
+  to point the Python scripts elsewhere.
+- **`extends` must be an absolute path** for the add-on, which does not know its
+  own location on disk. `amo_publish.py` accepts a relative one.
 
 ### Path templates
 
-Nothing about your layout is baked into the code. Placeholders:
+No asset layout is hard-coded. Placeholders:
 
-| | |
+| Placeholder | Value |
 |---|---|
 | `{slug}` | the item's slug |
 | `{lang}` | the locale's internal code (`pt_BR`, `zh_CN`) |
-| `{LANG}` | uppercase of `fileCode ?? internal` |
+| `{LANG}` | uppercase of `fileCode`, or of `internal` if unset |
 | `{cwsLang}` | the Chrome Web Store code (`pt-BR`, `iw`, `no`) |
 | `{amoLang}` | the AMO code, or empty when the locale is not on AMO |
 | `{n}` | screenshot index, 1-based |
 | `{version}` | the built package's version, read from `versionSource` |
 
-The default — one directory per supported language:
+Default layout, one directory per language:
 
 ```json
 "assets": {
@@ -160,11 +150,16 @@ The default — one directory per supported language:
 }
 ```
 
+`{LANG}` covers filenames that use a code that is neither yours nor a store's:
+set `"fileCode": "CN"` on that locale and `{LANG}` follows it.
+
+An unresolved placeholder is a hard error. A template missing `{lang}` would
+otherwise publish the same text in every language.
+
 ### The package
 
-`cws/cws_publish.py --upload` and `amo/amo_publish.py --upload-version` need to
-find the built ZIP, and the version is part of its name, so it gets a template
-too — plus a source to read the version from:
+`cws_publish.py --upload` and `amo_publish.py --upload-version` locate the built
+ZIP from a template, and read the version from the built manifest:
 
 ```json
 "chrome": {
@@ -173,22 +168,10 @@ too — plus a source to read the version from:
 }
 ```
 
-Reading the version out of the **built** manifest rather than taking it as an
-argument is the point: the number then cannot disagree with the bytes being
-uploaded. `versionSource` reuses the same `{path, key}` shape as AMO's
-`summarySource`, and tolerates Chrome's `{"key": {"message": …}}` wrapper.
-`--package <path>` bypasses both for a one-off.
-
-### More on templates
-
-`{LANG}` exists for the one thing a template cannot express: a project whose
-filenames use a code that is neither the internal one nor a store one. Put
-`"fileCode": "CN"` on that locale's row and `{LANG}` follows it, instead of a
-special case in the code.
-
-An unresolved placeholder is a hard error, not a warning. A template that forgot
-`{lang}` would read one file for every language and publish the same text
-everywhere.
+Reading the version from the build (instead of taking it as an argument) means
+it cannot disagree with the uploaded file. `versionSource` accepts Chrome's
+`{"key": {"message": …}}` wrapper. `--package <path>` bypasses all this for a
+one-off.
 
 ### The locale table
 
@@ -202,20 +185,16 @@ everywhere.
 ]
 ```
 
-- `internal` — your own code, and the key everything hangs off.
-- `cws` — the Chrome Web Store's code. It diverges: `iw` for Hebrew, `no` for
-  Norwegian, `fil` for Filipino, dashes for regional variants.
-- `amo` — the AMO code, or `null` when AMO cannot store listing translations for
-  that language (its production language list). Those locales are skipped for
-  texts, with a log line.
-- `name` — the label the CWS console shows in its language dropdown, in English
-  (`hl=en`). Matching prefers the trailing code in `"French – fr"`, so a small
-  wording change on Google's side does not break a run.
-- `altNames` — extra labels to try when the console's wording differs.
+| Field | Meaning |
+|---|---|
+| `internal` | your own code; everything else is keyed on it |
+| `cws` | the Chrome Web Store code, which often differs: `iw` (Hebrew), `no` (Norwegian), `fil` (Filipino), dashes for regional variants |
+| `amo` | the AMO code, or `null` if AMO does not support that language (its texts are then skipped, with a log line) |
+| `name` | the English label in the CWS language dropdown. The trailing code in `"French – fr"` is matched first, so small wording changes do not break a run |
+| `altNames` | extra labels to try if the console's wording differs |
 
-Duplicate `internal` or `cws` codes are rejected: the run would walk the same
-language twice and the second pass would overwrite the first with another
-locale's text.
+Duplicate `internal` or `cws` codes are rejected: one language would be written
+twice, the second time with another locale's text.
 
 ### AMO extras
 
@@ -227,320 +206,151 @@ locale's text.
 }
 ```
 
-AMO previews are **not** localized — one shared gallery per listing — so
-composing it is a policy choice, not a store rule:
+AMO previews are **not** localized: each listing has one shared gallery.
+`previewSet` chooses what goes in it:
 
-- `en-only` (default) — the base locale's screenshots. The honest default.
-- `en-plus-first-per-locale` — those, then the *first* screenshot of every other
-  language, so the gallery shows that the listing is translated. One extra
-  upload per language.
+- `en-only` (default): the base locale's screenshots.
+- `en-plus-first-per-locale`: those, plus the first screenshot of every other
+  language, to show the listing is translated. One extra upload per language.
 
-`summarySource` / `nameSource` read one string per locale out of a JSON file, for
-the listing summary and name. Both optional: omit them and those fields are not
-sent, and AMO leaves them alone. A key may be nested one level, matching
-Chrome's `messages.json` shape (`{"extName": {"message": "…"}}`). The name is
-sent only for locales where it actually differs from the live listing — AMO
-throttles writes hard and every edit is immediate.
-
----
-
-## Why the add-on exists
-
-Because the Chrome Web Store API has no listing metadata. Not "not yet", not
-"undocumented" — none. Its
-[discovery document](https://chromewebstore.googleapis.com/$discovery/rest?version=v2)
-is exhaustive and defines five methods over two resources:
-
-| `media` | `upload` (the package ZIP) |
-|---|---|
-| `publishers.items` | `publish`, `fetchStatus`, `cancelSubmission`, `setPublishedDeployPercentage` |
-
-No schema, no field, no method for a description, a localized description, a
-screenshot, a promo tile or a category. The
-[`publishers.items` resource](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items)
-says outright that it has "no persistent data", and the
-[usage guide](https://developer.chrome.com/docs/webstore/using-api) states the
-prerequisite: *"Before you can publish a new item, you have to fill out the Store
-listing and Privacy tabs in the Developer Dashboard."*
-
-So driving the dashboard is not a shortcut taken instead of reading the docs. It
-is the only mechanism that exists for that half of the job, which is why
-`extension/` is a peer of `cws/` here rather than something to be replaced by it.
-
-If you are about to go looking for that API: it is not in v1 either, and v1
-sunsets 15 October 2026. What changed in v2 is service-account auth, staged
-publishing and rollout control — all of which `cws/cws_publish.py` uses, and none
-of which touch the listing.
-
-**Microsoft says the same thing about Edge**, in the same words:
-
-> There aren't REST API endpoints for: Creating a new product. Updating a
-> product's metadata, such as the description. To create a new product or update
-> a product's metadata, you must use Microsoft Partner Center.
-
-Asked directly, the Edge team answered that the API's scope is CI/CD package
-uploads and that they were "looking into" listing metadata — in December 2024,
-with no date since. So Edge listings are filled in Partner Center, by hand or by
-a driver, exactly like the Chrome Web Store.
+`summarySource` and `nameSource` are optional and read one string per locale
+from a JSON file. The key may be nested one level, as in Chrome's
+`messages.json` (`{"extName": {"message": "…"}}`). If omitted, those fields are
+left untouched. The name is only sent where it differs from the live listing,
+since AMO throttles writes and every edit is immediate.
 
 ---
 
 ## Authentication
 
-**Chrome Web Store** — pick one mode under `cws` in your config:
+### Chrome Web Store
 
-- **Service account** (preferred). Create one in Google Cloud, then grant it API
-  access from the Developer Dashboard, and point `cws.serviceAccountKey` at its
-  JSON key file. No expiry, nothing to refresh.
-  Needs `pip install cryptography`: the assertion is a **RS256**-signed JWT, and
-  RSA is not in the standard library. The import happens only on this path, so
-  the refresh-token mode still works on a machine with no packages installed.
-- **OAuth refresh token** — `cws.client_id` + `cws.client_secret` +
+Pick one mode under `cws`:
+
+- **Service account** (recommended). Create one in Google Cloud, grant it API
+  access from the Developer Dashboard, and set `cws.serviceAccountKey` to its
+  JSON key file. It never expires. Requires `pip install cryptography`, because
+  the JWT is RS256-signed; it is imported only on this path.
+- **OAuth refresh token**: `cws.client_id`, `cws.client_secret` and
   `cws.refresh_token`, from the
   [OAuth Playground flow](https://developer.chrome.com/docs/webstore/using-api).
-  Zero dependencies, but **the refresh token expires every 7 days** while the
-  OAuth consent screen is in "Testing", which means redoing the dance at every
-  release. That is why the service account is the default recommendation.
+  No dependency, but while the OAuth consent screen is in "Testing" **the token
+  expires every 7 days**, so you redo the flow at every release.
 
-Both converge on a bearer token for the scope
-`https://www.googleapis.com/auth/chromewebstore`.
+Both end with a bearer token for `https://www.googleapis.com/auth/chromewebstore`.
 
-**Microsoft Edge** — `edge.client_id` + `edge.api_key`, from Partner Center >
-Microsoft Edge > **Publish API** > *Create API credentials*. v1.1 sends them as
-two request headers with **no token exchange and nothing to sign**, which makes
-it the only one of the three with no dependency and no expiry story. (v1's
-`client_credentials` flow is not implemented: support ended 31 December 2024.)
+### Microsoft Edge
 
-`edge.productIds` maps each item slug to its Partner Center **GUID**. An add-on
-has two identifiers and only this one works here — the id in the public store
-URL is a 32-letter string, and using it by mistake surfaces as a bare 404 on the
-first write, so the shape is checked and called out.
+`edge.client_id` and `edge.api_key`, from Partner Center > Microsoft Edge >
+**Publish API** > *Create API credentials*. v1.1 sends them as two headers: no
+token exchange, no signing, no expiry. (v1's `client_credentials` flow is not
+supported; it ended 31 December 2024.)
 
-**addons.mozilla.org** — `amo.jwt_issuer` + `amo.jwt_secret` from
-<https://addons.mozilla.org/developers/addon/api/key/>. HS256, so stdlib only.
+`edge.productIds` maps each item slug to its Partner Center **GUID**. Do not use
+the 32-letter id from the public store URL: it fails with a bare 404, so the
+format is checked up front.
 
-**The add-on has no credentials at all.** It authenticates as whoever the Firefox
-profile is signed in as, and only checks whether it got redirected to a login
-page.
+### addons.mozilla.org
+
+`amo.jwt_issuer` and `amo.jwt_secret`, from
+<https://addons.mozilla.org/developers/addon/api/key/>. HS256, standard library
+only.
+
+### The add-on
+
+No credentials. It acts as whoever is signed in to the Firefox profile, and only
+checks whether it was redirected to a login page.
 
 ---
 
 ## Using the add-on
 
-- **Extension** — from the `items` in your config.
-- **Update detailed descriptions** — replaces the description for every locale.
-- **Replace the localized screenshots per locale** — deletes the existing ones,
-  then uploads `1..N` in order.
-- **Replace international screenshots** — the global, non-localized slots. On its
-  own this **skips the language walk entirely**: that card is language-
-  independent, so there is nothing to select.
-- **Dry run** — navigates and locates every field, writes nothing.
-- **Locale filter** — empty = all; `fr,de` = just those; `from:pl` = resume an
-  aborted run at `pl`. Ignored, with a log line, when no per-language step is
-  ticked. After a run aborts or is stopped, the add-on fills this in for you —
-  see below.
-- **Stop** — asks the run to stop. It is a request, not a kill: the locale being
-  written is **finished and saved first**, and only then does the run end. One
-  locale is one unit of work — pick the language, write the description, replace
-  the screenshots, save — and stopping inside one is how a listing ends up with
-  its old screenshots deleted and its new ones never uploaded. On Partner Center
-  that wait is a couple of minutes, so the log says the stop was heard the moment
-  you press it.
-- **Probe page** — dumps the page's structure (dropdowns, textareas, file
-  inputs, headings, buttons, and what it walked to find them) to the log. This is
-  the debugging entry point when a console changes.
+The add-on fills the listing draft. It does not upload packages or publish: use
+the Python scripts for that, and `cws_publish.py --status` to check whether a
+draft is already in review before writing into it.
 
-  **It reuses a tab already showing that store** and only opens the listing page
-  when there is none. That matters more than it sounds: the pages worth dumping
-  are usually ones you navigated to — a language's details page, a form partway
-  through — and opening a fresh tab is exactly what destroys them. Navigate to
-  what you want to see, then click Probe.
+| Control | What it does |
+|---|---|
+| **Extension** | the item to publish, from `items` in your config |
+| **Update detailed descriptions** | replaces the description in every locale |
+| **Replace the localized screenshots per locale** | deletes the existing ones, then uploads `1..N` in order |
+| **Replace international screenshots** | the global, non-localized slots. On its own, this skips the language walk entirely |
+| **Dry run** | navigates and locates every field, writes nothing |
+| **Locale filter** | empty = all; `fr,de` = only those; `from:pl` = resume at `pl`. Ignored when no per-language step is ticked |
+| **Stop** | finishes and saves the current locale, then ends the run |
+| **Probe page** | dumps the page structure to the log, for debugging (see [Maintaining the drivers](#maintaining-the-drivers)) |
 
-  A tab is claimed by the driver's own `ownsUrl`, so a page it does not own is
-  never injected into, and the log says which tab it used.
+### Stopping and resuming
 
-  The Edge probe also **opens the "Add a language" control itself** and closes it
-  again, because you cannot hold a menu open across the click: pressing the
-  toolbar button moves focus out of the page, and a menu that closes on blur is
-  gone before the probe runs.
+**Stop is a request, not a kill.** A locale is one unit of work (select the
+language, write the description, replace the screenshots, save), and cutting it
+short could leave old screenshots deleted and new ones not uploaded. On Partner
+Center, finishing can take a couple of minutes; the log confirms right away that
+the stop was received.
 
-  It reads the page the way a screen reader would rather than the way a
-  stylesheet does — accessible names including `title` and `aria-labelledby`,
-  shadow roots walked, `<slot>` resolved to what is slotted into it — and reports
-  its counts. That is not thoroughness for its own sake: three separate controls
-  on Partner Center were missed by a narrower query, each costing a round trip,
-  and one dump came back reporting nothing at all because it filtered its own
-  output on the words that had just failed to match.
+A run also **aborts at the first failed step**, with diagnostics, rather than
+risk writing into the wrong locale.
 
-A run aborts at the first failed step, with diagnostics, rather than risk
-writing into the wrong locale.
+After either, **you can start again without reloading the add-on.** The locale
+filter is pre-filled with where to resume: the locale that aborted (it was not
+written), or the one after the last locale a stop finished. Check it and press
+Run.
 
-**Either way you can start again without reloading the add-on**, and the locale
-filter is already set to where the next run should pick up: the locale that
-aborted (it was not written, so it is retried), or the one after the last locale
-a stop finished (resuming on that one would delete and re-upload screenshots
-that are already right). Read it, change it if you disagree, press Run.
+If the add-on is reloaded or Firefox unloads its background page, the run dies
+with it; nothing keeps writing in the background. The popup reports that the
+last run was interrupted, and its log shows how far it got.
 
-If the add-on is reloaded or Firefox unloads its background page mid-run, the run
-dies with it — nothing keeps writing behind your back. The popup says the last
-run was interrupted and lets you start another; the log of the dead run is still
-there to show how far it got.
-
-The add-on fills the draft; it does not upload packages and does not publish.
-Those are `cws/cws_publish.py`'s job, and `--status` there is the way to see
-whether a draft is already in review before you start writing into it.
-
-The log lives in `storage.local`, not in the popup: Firefox destroys a popup the
-moment it loses focus, and a 43-locale run outlives that many times over. Close
-it and reopen — the output is still there, still updating.
+The log is kept in `storage.local`, not in the popup, because Firefox closes the
+popup whenever it loses focus. Reopen it and the log is still there, still
+updating.
 
 ---
 
-## When the console changes
+## Why the add-on exists
 
-Every DOM heuristic lives in `extension/stores/cws.js` and
-`extension/stores/edge.js`, and selectors are deliberately text- and role-based
-rather than class-based, so cosmetic redesigns pass through. When a step fails:
-click **Probe page**, read the dump, adjust the matching `<store>Page*` function,
-reload the temporary add-on, resume with `from:<locale>`.
+**The Chrome Web Store API has no listing metadata at all.** Its
+[discovery document](https://chromewebstore.googleapis.com/$discovery/rest?version=v2)
+defines five methods over two resources:
 
-Four things to know before editing either file:
+| `media` | `upload` (the package ZIP) |
+|---|---|
+| `publishers.items` | `publish`, `fetchStatus`, `cancelSubmission`, `setPublishedDeployPercentage` |
 
-- Every function in a store file is **prefixed with that store's id**
-  (`cwsPageSetDescription`, `edgePageSetDescription`). The manifest loads every
-  `stores/` file into one shared scope, where a top-level `function` declared
-  twice is not an error — the file loaded last simply wins, and the other driver
-  silently injects its rival's DOM code into its own store's page.
-- The `<store>Page*` functions are **serialised** into the page by
-  `chrome.scripting.executeScript({ world: 'MAIN' })`, so each one must be
-  entirely self-contained. That is why the small helpers (`visible`, `txt`,
-  `trail`) are repeated in every one of them. There is no bundler; factoring
-  them out would break the injection.
-- **Keep them short.** A loop that waits on the page belongs in the driver, not
-  in the injected function: a script that runs for forty-five seconds and outlives
-  a re-render dies with it and its promise never settles. That looks like a run
-  that simply stops — no error, no completion, nothing to read. From the driver,
-  the same wait becomes a timeout.
-- **Report before filtering.** A diagnostic that narrows its own output on the
-  words the search has just failed on comes back empty exactly when it is needed,
-  and an empty list cannot be told from an unreadable page. Dump everything and
-  add the counts; a dump the operator has to paste by hand is also a dump that
-  gets truncated, so make it compact rather than selective.
-- `listingUrl` pins `hl=en`. Every heading and `aria-label` regex assumes the
-  English console.
+Nothing for descriptions, screenshots, promo tiles or categories. The
+[`publishers.items` reference](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items)
+says it has "no persistent data", and the
+[usage guide](https://developer.chrome.com/docs/webstore/using-api) says: *"Before
+you can publish a new item, you have to fill out the Store listing and Privacy
+tabs in the Developer Dashboard."*
 
-Supporting another store means a new `extension/stores/<id>.js` exposing the same
-surface, documented at the bottom of `cws.js`.
+It is not in v1 either (which sunsets 15 October 2026). v2 added service-account
+auth, staged publishing and rollout control, all used by `cws_publish.py`, none
+of which touch the listing.
 
-### Partner Center (Edge)
+**Microsoft says the same about Edge:**
 
-`stores/edge.js` is complete: descriptions, screenshots, per-page saving, and the
-language enrolment below. Everything in it was written against a dump of the real
-page rather than against a guess, which is not a style preference — three separate
-controls were missed by a selector narrower than the page, each costing a round
-trip, so **probe first** is the rule here more than anywhere.
+> There aren't REST API endpoints for: Creating a new product. Updating a
+> product's metadata, such as the description. To create a new product or update
+> a product's metadata, you must use Microsoft Partner Center.
 
-It is structurally different from the Chrome Web Store, which is why it could not
-be copied:
-
-- **There is no language dropdown.** Store listings is a table with one row per
-  language, and each row's *Edit details* button opens a separate *Details for
-  &lt;language&gt;* page — so `selectLanguage` is a navigation, and the run has to
-  return to the table between languages.
-- **Leaving a page discards it.** The CWS commits all 43 languages with one manual
-  **Save draft** at the end; here each page must be saved as it is written.
-- Screenshots cap at **6**, sized 1280×800 or 640×400 — the card's own wording;
-  descriptions run **250–10,000** characters. That ceiling is why a consuming
-  project may need to shorten its listing text for this target and not the others.
-
-Three things about this console cost a day between them and are worth knowing
-before touching the file.
-
-**Controls are web components.** *Save draft* is
-`<v6_he-button>Save draft</v6_he-button>`: a real `<button>` in a shadow root with
-the label slotted in from the light DOM, so neither element has the words in its
-`textContent`. Read names the way a screen reader does — `aria-label`,
-`aria-labelledby`, `title`, slot-resolved text — walk shadow roots, and treat a
-component and the control inside it as one button.
-
-**Uploading a screenshot is about time, not about the gesture.** The console
-accepts an upload roughly fifteen seconds after the previous one and not before,
-whichever way the file is handed to it. Earlier versions paid that gap by accident
-inside verification windows they believed they were spending on gestures, which is
-why the "working" gesture appeared to change from upload to upload. It is waited
-out deliberately now: `MIN_UPLOAD_GAP_MS`, owed only against an upload the run
-itself made, plus an observable — every thumbnail carrying its own per-image
-controls, which is how one the console has committed is told from one it is still
-drawing. The last upload of a language gets the same wait before the page is
-saved, which it did not until a run saved while the fifth thumbnail was still
-going up.
-
-**The count is not the check.** An upload can fail on the store's side *after* the
-thumbnail appears, leaving an error tile: right count, wrong listing. So the slot
-is verified against the filenames that were sent — Partner Center labels each
-thumbnail with its own — and a tile that does not belong is deleted by name and
-its file sent again, before the page is saved. One bad tile costs one delete and
-one upload rather than a cleared slot and five re-uploads.
-
-**Do not duplicate screenshots across languages.** The store offers it and the
-driver exposes it, but nothing calls it: a project with localized screenshots
-would overwrite 42 languages with one language's images. A language with no page
-of its own already falls back to the default one on the store side. Wire it up
-only for a project whose screenshots carry no text, and only from the base locale.
-
-It will never press **Publish**: that is `edge/edge_publish.py`'s job, and the
-review before it stays human.
-
-#### Adding the languages
-
-A run against this store starts by making sure every locale in it actually has a
-page to write to. Partner Center lists only the languages you have **added** — the
-uploaded package makes them *available*, which is not the same thing — so a fresh
-product shows one row even with 43 locales in its zip.
-
-That pass is gated on the **driver having `addLanguage`**, never on which store is
-selected, so a store without the concept skips it entirely and the orchestration
-stays store-agnostic. Every difference between the two stores is expressed that
-way — as a capability the driver declares (`addLanguage`, `saveDraft`,
-`screenshotScopes`) and the orchestration asks about, never as a store name it
-checks for. It is idempotent: it asks the page what is already there and
-adds only the rest, so re-running after an abort resumes instead of duplicating.
-That matters for something 42 steps long the first time and zero steps long every
-time after.
-
-Adding a language navigates to its new details page, so the listings page is
-reopened between each one. A dry run writes nothing and lists what it would add.
-
-One behaviour worth knowing: a language the store does not offer is **skipped and
-reported**, not fatal. Partner Center's menu carries 41 languages and Filipino is
-not among them, so aborting a 42-language pass over one that can never work would
-be the wrong call. Every other failure still stops the run.
-
-**The table renders after the page reports complete**, and both readers wait for
-it: the one that lists the languages waits for the row count to stop changing, and
-the one that opens a language waits for *its own* row. Reading once produced a run
-that printed all 42 languages and then aborted on one of them as missing — and
-which language it hit moved between runs, which is what a race looks like from the
-outside.
+Asked directly in December 2024, the Edge team said the API targets CI/CD package
+uploads and that they were "looking into" listing metadata. Nothing has shipped
+since.
 
 ---
 
 ## Security notes
 
-- **The native host is confined.** A native messaging host is addressed by name,
-  and any add-on the host manifest allows can ask it for a file. Every requested
-  path is resolved — collapsing `..` and following symlinks — and must land
-  inside one of the roots in `native/allowed-roots.json`, which the installer
-  writes from the directories you name. A missing file means no roots, which
-  means every read is refused: a botched install cannot quietly grant
+- **The native host is confined.** Every requested path is resolved (collapsing
+  `..`, following symlinks) and must land inside a root listed in
+  `native/allowed-roots.json`, which the installer writes. If that file is
+  missing, every read is refused: a broken install cannot grant access to
   everything.
-- **`extension/config.json` and `.amo-previews-state.json` are gitignored.** The first
-  holds your AMO API secret and CWS publisher id. If you fork this and commit
-  one by accident, rotate the key at
+- **`extension/config.json` and `.amo-previews-state.json` are gitignored.** The
+  config holds your AMO API secret and CWS publisher id. If you commit it by
+  mistake, rotate the key at
   <https://addons.mozilla.org/developers/addon/api/key/>.
-- **No CWS credentials anywhere.** That side authenticates as whoever the
-  Firefox profile is signed in as. The add-on only checks whether it got
-  redirected to a login page.
+- **The add-on stores no credentials.** It uses the Firefox profile's session.
 - **The add-on is dev-only.** Load it temporarily via `about:debugging`; it is
   not meant to be signed or installed permanently.
 
@@ -556,37 +366,137 @@ python tests/test_config_parity.py   # the config loaders cannot drift apart
 python tests/test_native_host.py     # the native host's confinement
 ```
 
-What they pin is the quiet failures: a publish body Google would accept but that
-does the wrong thing, an upload sent to the plain `/v2` path instead of
-`/upload/v2`, `skipReview` sneaking into a body, a template that dropped
-`{version}` and would upload whichever build was lying around, or one config
-loader learning a rule the other did not.
+The Python tests target quiet failures: a publish body Google accepts but that
+does the wrong thing, an upload sent to `/v2` instead of `/upload/v2`,
+`skipReview` sneaking into a body, a template missing `{version}` that would
+upload whatever build is lying around, or the two config loaders disagreeing.
 
-**The DOM heuristics are tested too**, against a real DOM through
-`jest-environment-jsdom` — `tests/edge-page-functions.test.js` builds the shapes
-Partner Center actually serves (a command bar of web components, a slot with an
-error tile in it, a language table that renders late) and runs the real
-`edgePage*` functions over them. A stub would not have caught any of the bugs
-that made this necessary, because each one was a wrong belief about DOM
-semantics and a hand-written stub inherits the same belief.
+The JavaScript suites:
 
-Two more suites cover the parts a page cannot show:
-`tests/edge-upload-escalation.test.js` fakes the page at the `executeScript`
-boundary and drives the real upload loop — including a page that answers *slowly*,
-which is the case the verify-before-escalate rule exists for — and
-`tests/screenshot-verify.test.js` does the same for the repair pass, checking that
-an error tile is removed **by name** rather than by position.
+- `tests/edge-page-functions.test.js` runs the real `edgePage*` functions in
+  jsdom, over the shapes Partner Center actually serves (web-component command
+  bar, a slot with an error tile, a language table that renders late). A
+  hand-written stub would share the same wrong assumptions that caused the bugs.
+- `tests/edge-upload-escalation.test.js` fakes the page at the `executeScript`
+  boundary and drives the real upload loop, including a page that answers slowly.
+- `tests/screenshot-verify.test.js` checks that the repair pass removes an error
+  tile **by name**, not by position.
+- `tests/run-lifecycle.test.js` drives the real message handler through start,
+  stop and restart: a stop finishes the current locale, an aborted or stopped run
+  always allows another, and a stale `run_state` from a dead background page is
+  reconciled, not trusted.
 
-`tests/run-lifecycle.test.js` covers the part that is neither a page nor a
-request: starting, stopping and starting again. It drives the real message
-handler against a real run, and asserts what the operator actually needs — a stop
-finishes the locale in progress, an aborted or stopped run always leaves the
-add-on willing to start another, and a `run_state` left behind by a background
-page that died mid-run is reconciled instead of believed.
+What no test can tell you is whether the console still looks like this today.
+That is what **Dry run** and **Probe page** are for.
 
-What is still not testable is whether any of it matches the console today. That is
-what **Dry run** and **Probe page** are for.
+---
+
+## Maintaining the drivers
+
+All DOM logic lives in `extension/stores/cws.js` and `extension/stores/edge.js`.
+Selectors rely on text and roles, not CSS classes, so cosmetic redesigns do not
+break them.
+
+**When a step fails:** navigate to the page in question, click **Probe page**,
+read the dump, fix the matching `<store>Page*` function, reload the temporary
+add-on, and resume with `from:<locale>`.
+
+### About Probe page
+
+- It **reuses a tab already showing that store**, and only opens the listing page
+  if there is none. Navigate to the page you want dumped first: opening a fresh
+  tab would lose it. Tabs are matched by the driver's `ownsUrl`, and the log says
+  which one was used.
+- On Edge, it opens the "Add a language" menu itself and closes it again, since
+  the menu closes as soon as focus leaves the page.
+- It reads the page like a screen reader: accessible names (including `title` and
+  `aria-labelledby`), shadow roots walked, `<slot>` resolved to its content. It
+  reports counts along with the dump.
+
+### Rules for editing a store file
+
+- **Prefix every function with the store id** (`cwsPageSetDescription`,
+  `edgePageSetDescription`). All `stores/` files share one scope, where a
+  duplicate top-level `function` silently replaces the other one.
+- **`<store>Page*` functions must be self-contained.** They are serialized into
+  the page by `chrome.scripting.executeScript({ world: 'MAIN' })`, so helpers
+  (`visible`, `txt`, `trail`) are repeated in each. There is no bundler.
+- **Keep them short.** Waiting loops belong in the driver. An injected script
+  that outlives a page re-render dies silently and its promise never settles;
+  from the driver, the same wait is a clean timeout.
+- **Report before filtering.** A diagnostic that filters on the words that just
+  failed to match comes back empty exactly when you need it. Dump everything,
+  add counts, keep it compact.
+- **`listingUrl` pins `hl=en`.** Every heading and `aria-label` pattern assumes
+  the English console.
+
+To support another store, add `extension/stores/<id>.js` with the same surface,
+documented at the bottom of `cws.js`. Store differences are expressed as
+capabilities the driver declares (`addLanguage`, `saveDraft`,
+`screenshotScopes`), never as checks on the store's name.
+
+### Partner Center (Edge) specifics
+
+`stores/edge.js` handles descriptions, screenshots, per-page saving and adding
+languages. It was written against dumps of the real page; **probe first** matters
+here more than anywhere.
+
+How it differs from the Chrome Web Store:
+
+- **No language dropdown.** Store listings is a table, one row per language, and
+  each *Edit details* button opens a separate page. Selecting a language is a
+  navigation, and the run returns to the table between languages.
+- **Leaving a page discards it**, so each page is saved as it is written.
+- **Limits:** up to 6 screenshots, 1280×800 or 640×400; descriptions from 250 to
+  10,000 characters. A project may need shorter text for Edge than for the other
+  stores.
+- **It never presses Publish.** That is `edge_publish.py`'s job, after human
+  review.
+
+Things that are easy to get wrong:
+
+- **Controls are web components.** *Save draft* is
+  `<v6_he-button>Save draft</v6_he-button>`: a real `<button>` inside a shadow
+  root, with the label slotted from the light DOM, so neither element has the
+  text in its `textContent`. Resolve names like a screen reader, walk shadow
+  roots, and treat a component and its inner control as one button.
+- **Screenshot uploads need spacing.** The console accepts an upload about
+  fifteen seconds after the previous one, however the file is handed over. The
+  driver waits `MIN_UPLOAD_GAP_MS` (counted only from its own uploads), then
+  waits until every thumbnail shows its own per-image controls, which marks it as
+  committed. The last upload of a language gets the same wait before saving.
+- **The count is not the check.** An upload can fail after its thumbnail appears,
+  leaving an error tile. The driver compares thumbnails against the filenames it
+  sent (Partner Center labels each one), deletes any stray tile by name and
+  re-sends that file before saving.
+- **Do not duplicate screenshots across languages.** The store offers it and the
+  driver exposes it, but nothing calls it: with localized screenshots it would
+  overwrite every language with one language's images. Languages without their
+  own page already fall back to the default one. Only use it for text-free
+  screenshots, from the base locale.
+
+#### Adding the languages
+
+Partner Center only lists languages you have **added**; the package makes them
+*available*, which is not the same. A fresh product shows a single row whatever
+its ZIP contains.
+
+So an Edge run starts by adding the missing languages. This step runs because the
+driver has `addLanguage`, not because the store is Edge. It is idempotent: it
+reads what already exists and adds only the rest, so re-running after an abort
+resumes. Each addition opens the new language's page, so the listings page is
+reopened between them. A dry run lists what it would add.
+
+- **A language the store does not offer is skipped and reported**, not fatal
+  (Filipino, for example, is not in Partner Center's menu). Any other failure
+  stops the run.
+- **The table renders after the page reports complete.** The reader that lists
+  languages waits for the row count to settle, and the one that opens a language
+  waits for that language's row. Reading once caused runs that aborted on a
+  "missing" language that changed from run to run.
+
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
