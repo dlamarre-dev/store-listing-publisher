@@ -152,9 +152,19 @@ async function cwsPageSelectLanguage(wanted) {
       await sleep(1600);
       const after = languageCombo();
       const afterText = after ? txt(after) : '';
-      const confirmed = codeAnyRe
-        ? codeAnyRe.test(afterText)
-        : names.some(n => afterText.toLowerCase().includes(n));
+      // The combobox must now show the option that was clicked. Its own trailing
+      // code is the one to look for, not the configured one: when the option was
+      // matched by name, the two can differ (config says "iw", the dashboard now
+      // lists Hebrew as "he"), and checking the configured code would reject a
+      // switch that did happen.
+      const pickedCode = (selected.match(/[–—-]\s*([a-z]{2,3}(?:-[a-z0-9]+)*)\s*(?:\(default\))?$/i) || [])[1];
+      const codeShownRe = c => new RegExp('[–—-]\\s*'
+        + c.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '(?![\\w-])', 'i');
+      const confirmed = pickedCode
+        ? codeShownRe(pickedCode).test(afterText)
+        : codeAnyRe
+          ? codeAnyRe.test(afterText)
+          : names.some(n => afterText.toLowerCase().includes(n));
       return { ok: true, selected, confirmed, trigger: afterText.slice(0, 80) };
     }
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
