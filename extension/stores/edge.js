@@ -1540,6 +1540,32 @@ const SETTLE_MAX_MS = 45000;
 // further only against a run that records no repairs — the log prints both.
 const MIN_UPLOAD_GAP_MS = 15000;
 let lastUploadAt = 0;
+
+// How hard the run leans on Partner Center, outside the upload gap above.
+//
+// Twice a run was cut off by Partner Center's firewall (an Akamai "Access
+// Denied" page) in the middle of clearing a language's screenshots. That was
+// the one step with no spacing at all: each delete followed the previous one
+// as soon as its thumbnail disappeared, five or six in a few seconds, on every
+// language. Uploads were already a quarter of a minute apart.
+//
+// Fixed delays, not randomised ones. The point is to send fewer requests per
+// minute, not to look like something else. A run that is blocked again should
+// raise these, from config.edge.pacing, before anything else is tried.
+//
+//   deleteGapMs  between two deletes, and between the last delete and the
+//                first upload that follows it
+//   localeGapMs  before each language after the first
+const DEFAULT_PACING = { deleteGapMs: 10000, localeGapMs: 20000 };
+let pacing = { ...DEFAULT_PACING };
+let lastDeleteAt = 0;
+
+// Waits out whatever is left of `gapMs` since `since`. Returns what it waited.
+async function edgeWaitGap(since, gapMs) {
+  const owed = since ? gapMs - (Date.now() - since) : 0;
+  if (owed > 0) await edgeSleep(owed);
+  return Math.max(0, owed);
+}
 let learnedLatency = null;
 
 async function edgeLoadLatency() {
@@ -1687,9 +1713,29 @@ const EdgeDriver = {
   setDescription: (tabId, text, apply) =>
     edgeExec(tabId, edgePageSetDescription, [text, apply]),
 
+  // Reads config.edge.pacing over the defaults. Called once per run, before
+  // anything touches the page; values were checked by validateConfig.
+  configure(config) {
+    pacing = { ...DEFAULT_PACING, ...((config && config.edge && config.edge.pacing) || {}) };
+  },
+
+  // The pause before each language after the first. Returns what it waited so
+  // the log can say so: a run that is slower on purpose should read that way.
+  async paceLocale() {
+    if (pacing.localeGapMs > 0) await edgeSleep(pacing.localeGapMs);
+    return pacing.localeGapMs;
+  },
+
   countScreenshots: tabId => edgeExec(tabId, edgePageCountScreenshots),
-  deleteOneScreenshot: (tabId, scope, only) =>
-    edgeExec(tabId, edgePageDeleteOneScreenshot, [only || null]),
+
+  // Spaced: deletes were the burst that got the run blocked. See DEFAULT_PACING.
+  async deleteOneScreenshot(tabId, scope, only) {
+    await edgeWaitGap(lastDeleteAt, pacing.deleteGapMs);
+    const res = await edgeExec(tabId, edgePageDeleteOneScreenshot, [only || null]);
+    // Only a delete that was sent counts. An empty slot made no request.
+    if (res && !res.nothingToDelete) lastDeleteAt = Date.now();
+    return res;
+  },
 
   // Copies one language's screenshots to all the others — the store's own
   // feature.
@@ -1768,6 +1814,11 @@ const EdgeDriver = {
       const res = await edgeExec(tabId, edgePageCountScreenshots);
       return res && res.ok ? res.count : null;
     };
+    // Not straight from a burst of deletes into an upload. After the slot was
+    // cleared, `before` is 0 and the upload gap below does not apply, so without
+    // this the first upload would follow the last delete with no pause.
+    const deleteGapMs = await edgeWaitGap(lastDeleteAt, pacing.deleteGapMs);
+
     const before = await shots();
     const tried = [];
 
@@ -1790,7 +1841,7 @@ const EdgeDriver = {
     // observable — every thumbnail carrying its own per-image controls — costs
     // nothing when the slot is already idle, which is the case on the first
     // upload of a locale.
-    let settleMs = 0;
+    let settleMs = deleteGapMs;
     if (before) {
       // First the observable: every thumbnail carrying its own per-image
       // controls, which is how one the console has committed is told from one it

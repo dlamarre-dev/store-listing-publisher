@@ -108,6 +108,22 @@ describe('validateConfig', () => {
     expect(() => validateConfig(bad)).toThrow(/positive integer/);
   });
 
+  test('edge.pacing takes whole milliseconds under known names', () => {
+    const ok = valid();
+    ok.edge = { pacing: { deleteGapMs: 15000, localeGapMs: 0 } };
+    expect(() => validateConfig(ok)).not.toThrow();
+
+    const negative = valid();
+    negative.edge = { pacing: { deleteGapMs: -1 } };
+    expect(() => validateConfig(negative)).toThrow(/edge\.pacing\.deleteGapMs: must be a whole number/);
+
+    // Seconds instead of milliseconds is the likely slip, and a typo in the
+    // name would otherwise be ignored silently, leaving the default in place.
+    const typo = valid();
+    typo.edge = { pacing: { deleteGap: 10 } };
+    expect(() => validateConfig(typo)).toThrow(/edge\.pacing\.deleteGap: unknown/);
+  });
+
   test('every problem is reported at once, not one per run', () => {
     let message = '';
     try {
