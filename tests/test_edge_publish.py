@@ -92,6 +92,34 @@ expect_exit("a missing client_id refuses too",
             lambda: E.edge_headers({"api_key": "key"}), "client_id")
 
 
+# ── an expired key ────────────────────────────────────────────────────────────
+
+print("HTTP errors")
+# The key expires every 72 days and the 401 body does not say so, so the exit
+# message has to. Other statuses must not blame the key.
+def failing_urlopen(code):
+    def urlopen(req, timeout=None):
+        raise E.urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(b"{}"))
+    return urlopen
+
+
+_real_urlopen = E.urllib.request.urlopen
+try:
+    E.urllib.request.urlopen = failing_urlopen(401)
+    expect_exit("a 401 points at the key's 72-day expiry",
+                lambda: E.api_request(headers, "GET", "/products/x"), "72 days")
+    expect_exit("and at where to regenerate it",
+                lambda: E.api_request(headers, "GET", "/products/x"), "Publish API")
+    E.urllib.request.urlopen = failing_urlopen(404)
+    try:
+        E.api_request(headers, "GET", "/products/x")
+        check("a 404 exits", False, "did not exit")
+    except SystemExit as exc:
+        check("a 404 does not blame the key", "expired" not in str(exc), str(exc)[:70])
+finally:
+    E.urllib.request.urlopen = _real_urlopen
+
+
 # ── product addressing ────────────────────────────────────────────────────────
 
 print("product id")
