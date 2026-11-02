@@ -243,8 +243,13 @@ Both end with a bearer token for `https://www.googleapis.com/auth/chromewebstore
 
 `edge.client_id` and `edge.api_key`, from Partner Center > Microsoft Edge >
 **Publish API** > *Create API credentials*. v1.1 sends them as two headers: no
-token exchange, no signing, no expiry. (v1's `client_credentials` flow is not
-supported; it ended 31 December 2024.)
+token exchange, no signing. (v1's `client_credentials` flow is not supported; it
+ended 31 December 2024.)
+
+**The API key expires every 72 days.** Microsoft emails a warning beforehand,
+then every call fails with HTTP 401. Generate a new key on the same Publish API
+page (the Expiry column shows when the current one runs out) and replace
+`edge.api_key`; the `client_id` stays the same.
 
 `edge.productIds` maps each item slug to its Partner Center **GUID**. Do not use
 the 32-letter id from the public store URL: it fails with a bare 404, so the

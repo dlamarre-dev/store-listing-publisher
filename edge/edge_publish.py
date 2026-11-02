@@ -49,6 +49,16 @@ DEFAULT_CONFIG = REPO_ROOT / "extension" / "config.json"
 OPERATION_POLL_S = 5        # between polls while an operation runs
 OPERATION_TIMEOUT_S = 900   # certification-side processing can be slow
 RETRY_STATUSES = (429, 500, 503)
+
+# A 401 from this API almost always means the key ran out: v1.1 keys expire
+# every 72 days, and a key that worked yesterday is refused today with nothing
+# in the response saying why.
+AUTH_EXPIRED_HINT = (
+    "\n\nThe Edge API key has most likely expired (keys last 72 days), or was "
+    "regenerated elsewhere.\n"
+    "Partner Center > Microsoft Edge > Publish API: check the Expiry column, "
+    "generate a new key and replace edge.api_key in your config.json "
+    "(the client_id does not change).")
 MAX_RETRIES = 5
 
 # The state file records the last operation id per product, because the API has
@@ -278,7 +288,10 @@ def api_request(headers, method, path, json_body=None, raw_body=None,
                       f"(attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait)
                 continue
-            sys.exit(f"API {method} {url} failed: HTTP {exc.code}\n{detail}")
+            message = f"API {method} {url} failed: HTTP {exc.code}\n{detail}"
+            if exc.code == 401:
+                message += AUTH_EXPIRED_HINT
+            sys.exit(message)
         except urllib.error.URLError as exc:
             if attempt < max_retries:
                 print(f"  network error ({exc.reason}); retrying in 5s")
