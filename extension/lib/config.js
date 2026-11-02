@@ -88,6 +88,21 @@ function validateConfig(config) {
     }
   }
 
+  const pacing = config.edge && config.edge.pacing;
+  if (pacing !== undefined) {
+    if (!isPlainObject(pacing)) {
+      problems.push('edge.pacing: must be an object');
+    } else {
+      for (const [key, value] of Object.entries(pacing)) {
+        if (!['deleteGapMs', 'localeGapMs'].includes(key)) {
+          problems.push(`edge.pacing.${key}: unknown — use deleteGapMs or localeGapMs`);
+        } else if (!(Number.isInteger(value) && value >= 0)) {
+          problems.push(`edge.pacing.${key}: must be a whole number of milliseconds, 0 or more`);
+        }
+      }
+    }
+  }
+
   if (problems.length) {
     throw new Error('Invalid configuration:\n  - ' + problems.join('\n  - '));
   }

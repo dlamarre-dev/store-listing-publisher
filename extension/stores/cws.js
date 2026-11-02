@@ -376,6 +376,9 @@ async function cwsExec(tabId, func, args = []) {
 //   uploadScreenshot — screenshot ops take one of the driver's own
 //   screenshotScopes, which are 'localized' and, where the store has such a card,
 //   'global'.
+// Optional, called only when present: configure(config) once per run,
+// paceLocale() before each language after the first, plus addLanguage,
+// saveDraft, settleAssets and describeAssets (see background.js).
 const CwsDriver = {
   id: 'cws',
 

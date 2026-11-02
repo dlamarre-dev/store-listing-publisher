@@ -526,6 +526,9 @@ async function runPublish(rawConfig, opts, onProgress) {
 
   const config = await loadFullConfig(rawConfig);
   validateLocales(config.locales);
+  // A store that reads its own settings (Edge's pacing) gets them before it
+  // touches anything. A driver without the method has none.
+  if (typeof driver.configure === 'function') driver.configure(config);
 
   const item = config.items.find(i => i.slug === opts.itemSlug);
   if (!item) throw new Error(`Item "${opts.itemSlug}" not in the configuration`);
@@ -652,8 +655,16 @@ async function runPublish(rawConfig, opts, onProgress) {
     // save — and cutting it in half is how you get a page whose old screenshots are
     // deleted and whose new ones never went up. So the current locale is finished,
     // and the locale AFTER it is the one to resume on.
-    for (const locale of walkable) {
+    for (const [index, locale] of walkable.entries()) {
       if (stopRequested()) throw new RunStopped(locale.internal);
+      // A store that asks for a pause between languages gets it, and gets it
+      // before the stop is checked again: a stop pressed during the pause is
+      // honoured here rather than one whole locale later. Nothing is written yet.
+      if (index > 0 && !opts.dryRun && typeof driver.paceLocale === 'function') {
+        const waited = await driver.paceLocale();
+        if (waited) onProgress(`  (pause ${(waited / 1000).toFixed(0)}s before the next language)`);
+        if (stopRequested()) throw new RunStopped(locale.internal);
+      }
       try {
         await publishLocale(driver, tab.id, locale, texts[locale.internal], opts, ctx, onProgress);
       } catch (e) {

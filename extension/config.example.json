@@ -50,6 +50,11 @@
     "api_key": "YOUR_EDGE_API_KEY",
     "productIds": {
       "my-extension": "00000000-0000-0000-0000-000000000000"
+    },
+    "_pacing_comment": "Optional. Milliseconds between screenshot deletes, and before each language after the first. Raise them if Partner Center answers \"Access Denied\".",
+    "pacing": {
+      "deleteGapMs": 10000,
+      "localeGapMs": 20000
     }
   }
 }

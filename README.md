@@ -291,7 +291,8 @@ draft is already in review before writing into it.
 language, write the description, replace the screenshots, save), and cutting it
 short could leave old screenshots deleted and new ones not uploaded. On Partner
 Center, finishing can take a couple of minutes; the log confirms right away that
-the stop was received.
+the stop was received. A stop pressed during the pause between two languages
+takes effect at the end of that pause.
 
 A run also **aborts at the first failed step**, with diagnostics, rather than
 risk writing into the wrong locale.
@@ -470,6 +471,17 @@ Things that are easy to get wrong:
   driver waits `MIN_UPLOAD_GAP_MS` (counted only from its own uploads), then
   waits until every thumbnail shows its own per-image controls, which marks it as
   committed. The last upload of a language gets the same wait before saving.
+- **Deletes and languages are spaced too.** Partner Center sits behind a
+  firewall (Akamai) that answers "Access Denied" to a browser it finds too busy.
+  It blocked runs twice while screenshots were being cleared back to back. The
+  driver now waits 10 s between two deletes, and between the last delete and
+  the next upload, plus 20 s before each language after the first. That adds
+  roughly 45 minutes to a 43-language run. Both delays are fixed and can be
+  raised in the config if a block comes back:
+
+  ```json
+  "edge": { "pacing": { "deleteGapMs": 10000, "localeGapMs": 20000 } }
+  ```
 - **The count is not the check.** An upload can fail after its thumbnail appears,
   leaving an error tile. The driver compares thumbnails against the filenames it
   sent (Partner Center labels each one), deletes any stray tile by name and
