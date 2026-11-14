@@ -70,3 +70,111 @@ describe('confirming a language switch', () => {
       .toMatchObject({ ok: true, confirmed: false });
   });
 });
+
+
+// ── deleting a screenshot ─────────────────────────────────────────────────────
+//
+// Google changed the confirmation dialog and the run aborted with nothing but
+// {before: 5, after: 5}. The dialog is now recognised in more forms, and a
+// failure says what the page showed instead.
+
+// `shots` remove buttons under "Localized assets". Clicking one opens `dialog`
+// (built by the test); the dialog's confirm removes the first screenshot.
+function loadDelete(shots, buildDialog) {
+  document.body.innerHTML = `<h2>Localized assets</h2><div id="shots">${
+    Array.from({ length: shots }, (_, i) =>
+      `<button aria-label="Remove image Screenshot ${i + 1}"></button>`).join('')}</div>`;
+  Element.prototype.getClientRects = function getClientRects() {
+    return this.closest && this.closest('[hidden]') ? [] : [{ width: 10, height: 10 }];
+  };
+  const removeOne = () => document.querySelector('#shots button')?.remove();
+  document.querySelectorAll('#shots button').forEach(b => b.addEventListener('click', () => {
+    if (buildDialog) buildDialog(removeOne);
+  }));
+
+  const sandbox = {
+    chrome: { scripting: { executeScript: async () => [{ result: null }] } },
+    document,
+    getComputedStyle: (el) => window.getComputedStyle(el),
+    KeyboardEvent: window.KeyboardEvent,
+    Node,
+    setTimeout: (fn) => { fn(); return 0; },
+    console,
+  };
+  const src = fs.readFileSync(path.join(__dirname, '..', 'extension', 'stores', 'cws.js'), 'utf8');
+  vm.runInContext(src + '\n;globalThis.__fn = cwsPageDeleteOneScreenshot;',
+                  vm.createContext(sandbox), { filename: 'stores/cws.js' });
+  return sandbox.__fn;
+}
+
+// A dialog in the light DOM. `confirm` is the label of the button that deletes.
+function lightDialog(open, buttons, confirm) {
+  return (removeOne) => {
+    const host = document.createElement('div');
+    host.innerHTML = open;
+    const dlg = host.firstElementChild;
+    for (const label of buttons) {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.addEventListener('click', () => { if (label === confirm) removeOne(); dlg.remove(); });
+      dlg.appendChild(b);
+    }
+    document.body.appendChild(dlg);
+  };
+}
+
+describe('deleting a screenshot', () => {
+  test('confirms a role="dialog", pressing Delete and not Cancel', async () => {
+    const del = loadDelete(5, lightDialog('<div role="dialog"></div>', ['Cancel', 'Delete'], 'Delete'));
+    expect(await del('localized')).toMatchObject({ ok: true, before: 5, after: 4, confirmed: 'Delete' });
+  });
+
+  test('confirms a native <dialog> with no role', async () => {
+    const del = loadDelete(2, lightDialog('<dialog open></dialog>', ['Keep image', 'Remove image'], 'Remove image'));
+    expect(await del('localized')).toMatchObject({ ok: true, after: 1, confirmed: 'Remove image' });
+  });
+
+  test('confirms an aria-modal container', async () => {
+    const del = loadDelete(2, lightDialog('<div aria-modal="true"></div>', ['Cancel', 'OK'], 'OK'));
+    expect(await del('localized')).toMatchObject({ ok: true, after: 1 });
+  });
+
+  test('confirms a dialog component whose buttons sit in a shadow root', async () => {
+    const del = loadDelete(3, (removeOne) => {
+      const dlg = document.createElement('x-confirm-dialog');
+      const shadow = dlg.attachShadow({ mode: 'open' });
+      for (const label of ['Cancel', 'Delete']) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.addEventListener('click', () => { if (label === 'Delete') removeOne(); dlg.remove(); });
+        shadow.appendChild(b);
+      }
+      document.body.appendChild(dlg);
+    });
+    const r = await del('localized');
+    expect(r).toMatchObject({ ok: true, after: 2, confirmed: 'Delete' });
+  });
+
+  test('still works when the console deletes without asking', async () => {
+    const del = loadDelete(2, (removeOne) => removeOne());
+    expect(await del('localized')).toMatchObject({ ok: true, after: 1 });
+  });
+
+  test('reports what a dialog offered when nothing in it confirms', async () => {
+    const del = loadDelete(2, lightDialog('<div role="dialog"><p>Discard?</p></div>', ['Cancel', 'Got it'], null));
+    const res = await del('localized');
+    expect(res).toMatchObject({ ok: false, step: 'no-confirm-control', before: 2, after: 2 });
+    expect(res.dialogs[0].buttons).toEqual(['Cancel', 'Got it']);
+  });
+
+  test('lists what the click brought up when no dialog is recognised', async () => {
+    const del = loadDelete(2, () => {
+      const row = document.createElement('div');
+      row.innerHTML = '<span>Are you sure?</span><button>Yes, discard</button>';
+      document.body.appendChild(row);
+    });
+    const res = await del('localized');
+    expect(res).toMatchObject({ ok: false, step: 'delete-did-not-take', sawDialog: false });
+    expect(res.newButtons).toEqual(['Yes, discard']);
+  });
+});
