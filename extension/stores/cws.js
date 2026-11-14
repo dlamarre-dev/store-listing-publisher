@@ -88,10 +88,37 @@ function cwsPageProbe() {
     .filter(Boolean)
     .slice(0, 80);
 
+  // Whatever is open as a dialog, so a probe taken with a confirmation showing
+  // says what it is made of. Same recognition as cwsPageDeleteOneScreenshot.
+  const deepAll = (root, out) => {
+    out = out || [];
+    // The root's own shadow tree too: a dialog component keeps its buttons there.
+    if (root.shadowRoot) deepAll(root.shadowRoot, out);
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const dialogs = deepAll(document)
+    .filter(el => ['dialog', 'alertdialog'].includes((el.getAttribute('role') || '').toLowerCase())
+      || el.tagName === 'DIALOG'
+      || el.getAttribute('aria-modal') === 'true'
+      || /DIALOG/.test(el.tagName) && el.tagName.includes('-'))
+    .filter(visible)
+    .slice(0, 5)
+    .map(d => ({
+      tag: d.tagName, role: d.getAttribute('role'), text: txt(d).slice(0, 200),
+      buttons: deepAll(d)
+        .filter(el => el.tagName === 'BUTTON' || el.getAttribute('role') === 'button')
+        .filter(visible)
+        .map(b => (b.getAttribute('aria-label') || txt(b)).slice(0, 50)),
+    }));
+
   return {
     url: location.href,
     headings: headings.map(txt).slice(0, 80),
-    textareas, comboboxes, fileInputs, images, buttons,
+    textareas, comboboxes, fileInputs, images, buttons, dialogs,
   };
 }
 
@@ -257,7 +284,21 @@ function cwsPageCountScreenshots(scope) {
 
 // Deletes the first screenshot of the scope by clicking its "Remove image
 // Screenshot N" button (always visible), confirms a dialog if one appears,
-// then waits for the count to drop. Returns {ok, before, after}.
+// then waits for the count to drop. Returns {ok, before, after}, and on failure
+// what the page showed after the click.
+//
+// The confirmation used to be found with a flat query for [role="dialog"]
+// looked at once, 600 ms after the click. A console update changed the dialog
+// and the run aborted with nothing but {before: 5, after: 5}. So the dialog is
+// now looked for the way the Edge driver does it, which survived the same kind
+// of change on Partner Center:
+//   - over the deep tree, shadow roots included;
+//   - by role, by the native <dialog> tag, by aria-modal, and by a component tag
+//     with DIALOG in its name (mat-dialog-container, cdk-dialog-container, …);
+//   - more than once, because the dialog is rendered after the click.
+// And when it still fails, the result says what the dialog offered, or which
+// buttons appeared after the click if no dialog was recognised, so the next fix
+// is one round trip.
 async function cwsPageDeleteOneScreenshot(scope) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const visible = el => {
@@ -265,6 +306,22 @@ async function cwsPageDeleteOneScreenshot(scope) {
     return s.display !== 'none' && s.visibility !== 'hidden' && el.getClientRects().length > 0;
   };
   const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const deepAll = (root, out) => {
+    out = out || [];
+    // The root's own shadow tree too: a dialog component keeps its buttons there.
+    if (root.shadowRoot) deepAll(root.shadowRoot, out);
+    for (const el of root.querySelectorAll('*')) {
+      out.push(el);
+      if (el.shadowRoot) deepAll(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const name = el => (el.getAttribute('aria-label') || el.getAttribute('title') || txt(el))
+    .replace(/\s+/g, ' ').trim();
+  const isButton = el => el.tagName === 'BUTTON'
+    || (el.getAttribute('role') || '').toLowerCase() === 'button';
+  const visibleButtonNames = () => deepAll(document)
+    .filter(isButton).filter(visible).map(name).filter(Boolean);
 
   const collect = () => {
     const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
@@ -284,27 +341,82 @@ async function cwsPageDeleteOneScreenshot(scope) {
   const before = removeBtns.length;
   if (before === 0) return { ok: true, before: 0, after: 0, nothingToDelete: true };
 
+  const buttonsBefore = new Set(visibleButtonNames());
   removeBtns[0].click();
-  await sleep(600);
 
-  // Confirmation dialog, if the console asks.
-  const dlg = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).find(visible);
-  if (dlg) {
-    const confirm = Array.from(dlg.querySelectorAll('button, [role="button"]'))
-      .filter(visible)
-      .find(b => /delete|remove|yes|confirm|ok|supprimer/i.test(txt(b) + ' ' + (b.getAttribute('aria-label') || '')));
-    if (confirm) { confirm.click(); await sleep(600); }
+  const dialogs = () => deepAll(document)
+    .filter(el => ['dialog', 'alertdialog'].includes((el.getAttribute('role') || '').toLowerCase())
+      || el.tagName === 'DIALOG'
+      || el.getAttribute('aria-modal') === 'true'
+      || /DIALOG/.test(el.tagName) && el.tagName.includes('-'))
+    .filter(visible);
+
+  // Up to 4 s for a dialog to show, or for the screenshot to go without one.
+  let open = [];
+  for (let i = 0; i < 10 && !open.length; i += 1) {
+    await sleep(400);
+    open = dialogs();
+    if (!open.length && collect().length < before) break;
   }
 
-  // Wait up to 10 s for the remove-button count to drop.
-  const deadline = Date.now() + 10000;
-  let after = before;
-  while (Date.now() < deadline) {
+  // Inside the dialog: every button, shadow roots included. A component and the
+  // real <button> inside it read as one control; the host carries the label.
+  const controls = dlg => {
+    const list = deepAll(dlg).filter(isButton).filter(visible)
+      .map(el => ({ el, name: name(el) })).filter(c => c.name);
+    return list.filter(c => {
+      const host = c.el.getRootNode() && c.el.getRootNode().host;
+      return !(host && list.some(o => o.el === host));
+    });
+  };
+
+  let confirmed = null;
+  for (const dlg of open) {
+    // Affirmative only, and the negatives ruled out first: "Cancel" or "Keep"
+    // would leave the screenshot in place while the run believed it gone.
+    const hit = controls(dlg)
+      .filter(c => !/cancel|close|dismiss|keep|annuler|fermer|\bno\b|\bnon\b/i.test(c.name))
+      .find(c => /delete|remove|yes|confirm|\bok\b|continue|supprimer|retirer|oui/i.test(c.name));
+    if (hit) {
+      const inner = hit.el.shadowRoot && hit.el.shadowRoot.querySelector('button, [role="button"]');
+      (inner || hit.el).click();
+      confirmed = hit.name;
+      break;
+    }
+  }
+
+  if (open.length && !confirmed) {
+    return {
+      ok: false, step: 'no-confirm-control', before, after: collect().length,
+      dialogs: open.slice(0, 3).map(d => ({
+        tag: d.tagName, role: d.getAttribute('role'), text: txt(d).slice(0, 200),
+        buttons: controls(d).map(c => c.name),
+      })),
+      detail: 'A confirmation dialog opened and nothing in it read as an affirmative. '
+        + 'The screenshot is still there and the dialog is still open. "dialogs" '
+        + 'lists what it offers.',
+    };
+  }
+
+  // Up to 10 s for the remove-button count to drop.
+  let after = collect().length;
+  for (let i = 0; i < 20 && after >= before; i += 1) {
     await sleep(500);
     after = collect().length;
-    if (after < before) break;
   }
-  return { ok: after < before, before, after };
+  if (after < before) return { ok: true, before, after, confirmed };
+
+  return {
+    ok: false, step: 'delete-did-not-take', before, after,
+    sawDialog: open.length > 0, confirmed,
+    // What the click brought up, when it was not recognised as a dialog: a menu,
+    // a popover, an inline "Are you sure?" row.
+    newButtons: visibleButtonNames().filter(n => !buttonsBefore.has(n)).slice(0, 20),
+    detail: open.length
+      ? `Pressed "${confirmed}" in the confirmation dialog, but the screenshot is still there.`
+      : 'No confirmation dialog was recognised after clicking Remove, and the screenshot '
+        + 'is still there. "newButtons" lists the controls that appeared after the click.',
+  };
 }
 
 // Injects one PNG into the screenshots file input of the scope via
